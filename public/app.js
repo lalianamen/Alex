@@ -730,22 +730,35 @@ function openUserModal(user, departments, sites) {
       </label>
       <label id="u-dept-label">Department
         <select id="u-dept">${optionList(departments, user ? user.department_id : null)}</select>
+        <div id="u-dept-hint" class="field-hint hidden">No departments yet — add one on the Departments tab first.</div>
       </label>
       <label id="u-site-label">Site
         <select id="u-site">${optionList(sites, user ? user.site_id : null)}</select>
+        <div id="u-site-hint" class="field-hint hidden">No sites yet — add one on the Sites tab first.</div>
       </label>
       <div id="u-error" class="form-error hidden"></div>
       <div class="modal-actions">
         <button type="button" class="btn" onclick="closeModal()">Cancel</button>
-        <button type="submit" class="btn btn-primary">${isNew ? 'Create' : 'Save'}</button>
+        <button type="submit" id="u-submit" class="btn btn-primary">${isNew ? 'Create' : 'Save'}</button>
       </div>
     </form>
   `);
 
+  const hasActiveDept = departments.some((d) => d.is_active) || (user && user.department_id);
+  const hasActiveSite = sites.some((s) => s.is_active) || (user && user.site_id);
   const roleSelect = $('#u-role');
   const syncFields = () => {
-    $('#u-dept-label').style.display = DEPT_ROLES.includes(roleSelect.value) ? '' : 'none';
-    $('#u-site-label').style.display = SITE_ROLES.includes(roleSelect.value) ? '' : 'none';
+    const needDept = DEPT_ROLES.includes(roleSelect.value);
+    const needSite = SITE_ROLES.includes(roleSelect.value);
+    $('#u-dept-label').style.display = needDept ? '' : 'none';
+    $('#u-site-label').style.display = needSite ? '' : 'none';
+    const deptMissing = needDept && !hasActiveDept;
+    const siteMissing = needSite && !hasActiveSite;
+    $('#u-dept-hint').classList.toggle('hidden', !deptMissing);
+    $('#u-site-hint').classList.toggle('hidden', !siteMissing);
+    $('#u-dept').style.display = deptMissing ? 'none' : '';
+    $('#u-site').style.display = siteMissing ? 'none' : '';
+    $('#u-submit').disabled = deptMissing || siteMissing;
   };
   roleSelect.addEventListener('change', syncFields);
   syncFields();
