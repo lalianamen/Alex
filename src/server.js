@@ -45,6 +45,7 @@ function publicUser(u) {
     department_id: u.department_id,
     site_id: u.site_id,
     is_active: !!u.is_active,
+    must_set_password: !!u.must_set_password,
     created_at: u.created_at,
   };
 }
@@ -108,13 +109,14 @@ async function addEvent(requestId, userId, action, comment) {
 
 app.post('/api/login', async (req, res) => {
   const { login, password } = req.body || {};
-  if (!login || !password) {
-    return res.status(400).json({ error: 'Enter username and password' });
-  }
+  if (!login) return res.status(400).json({ error: 'Enter a username' });
   const user = await one('SELECT * FROM users WHERE LOWER(login) = LOWER($1)', [
     String(login).trim(),
   ]);
-  if (!user || !verifyPassword(String(password), user.password_hash)) {
+  if (!user) return res.status(401).json({ error: 'Invalid username or password' });
+  // Accounts awaiting first-time setup have no password: sign in on username
+  // alone, then the client forces the user to choose a password.
+  if (!user.must_set_password && !verifyPassword(String(password || ''), user.password_hash)) {
     return res.status(401).json({ error: 'Invalid username or password' });
   }
   if (!user.is_active) {
@@ -123,6 +125,22 @@ app.post('/api/login', async (req, res) => {
   const token = await createSession(user.id);
   res.cookie(COOKIE_NAME, token, { httpOnly: true, sameSite: 'lax', secure: SECURE_COOKIES });
   res.json({ user: publicUser(user) });
+});
+
+// Set a password for an account that was created (or reset) without one.
+app.post('/api/me/set-password', requireRole(), async (req, res) => {
+  if (!req.user.must_set_password) {
+    return res.status(400).json({ error: 'A password is already set; use Change password' });
+  }
+  const password = String((req.body || {}).new_password || '');
+  if (password.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  }
+  await query(
+    'UPDATE users SET password_hash = $1, must_set_password = FALSE, updated_at = now() WHERE id = $2',
+    [hashPassword(password), req.user.id]
+  );
+  res.json({ ok: true });
 });
 
 app.post('/api/logout', async (req, res) => {
@@ -215,10 +233,11 @@ namedListRoutes('sites', 'sites');
 // Users (system administrator)
 // ---------------------------------------------------------------------------
 
-async function validateUserPayload(body, { requirePassword }) {
+async function validateUserPayload(body) {
   const login = String(body.login || '').trim();
   const full_name = String(body.full_name || '').trim();
   const role = String(body.role || '');
+  // Password is optional: when blank, the user sets it at first sign-in.
   const password = body.password == null ? '' : String(body.password);
   const department_id = body.department_id ? toId(body.department_id) : null;
   const site_id = body.site_id ? toId(body.site_id) : null;
@@ -229,7 +248,7 @@ async function validateUserPayload(body, { requirePassword }) {
   }
   if (!full_name) return { error: 'Enter a full name' };
   if (!ROLES.includes(role)) return { error: 'Invalid role' };
-  if (requirePassword && password.length < 6) {
+  if (password && password.length < 6) {
     return { error: 'Password must be at least 6 characters' };
   }
 
@@ -266,15 +285,24 @@ app.get('/api/users', requireRole('admin'), async (req, res) => {
 });
 
 app.post('/api/users', requireRole('admin'), async (req, res) => {
-  const check = await validateUserPayload(req.body || {}, { requirePassword: true });
+  const check = await validateUserPayload(req.body || {});
   if (check.error) return res.status(400).json({ error: check.error });
   const v = check.value;
   const exists = await one('SELECT id FROM users WHERE LOWER(login) = LOWER($1)', [v.login]);
   if (exists) return res.status(400).json({ error: 'A user with this username already exists' });
+  const hasPassword = v.password.length >= 6;
   const user = await one(
-    `INSERT INTO users (login, password_hash, full_name, role, department_id, site_id)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-    [v.login, hashPassword(v.password), v.full_name, v.role, v.department_id, v.site_id]
+    `INSERT INTO users (login, password_hash, full_name, role, department_id, site_id, must_set_password)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+    [
+      v.login,
+      hasPassword ? hashPassword(v.password) : '',
+      v.full_name,
+      v.role,
+      v.department_id,
+      v.site_id,
+      !hasPassword,
+    ]
   );
   res.json({ user: publicUser(user) });
 });
@@ -282,7 +310,7 @@ app.post('/api/users', requireRole('admin'), async (req, res) => {
 app.put('/api/users/:id', requireRole('admin'), async (req, res) => {
   const user = await one('SELECT * FROM users WHERE id = $1', [toId(req.params.id)]);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  const check = await validateUserPayload(req.body || {}, { requirePassword: false });
+  const check = await validateUserPayload(req.body || {});
   if (check.error) return res.status(400).json({ error: check.error });
   const v = check.value;
   const exists = await one('SELECT id FROM users WHERE LOWER(login) = LOWER($1) AND id != $2', [
@@ -302,14 +330,23 @@ app.post('/api/users/:id/password', requireRole('admin'), async (req, res) => {
   const user = await one('SELECT * FROM users WHERE id = $1', [toId(req.params.id)]);
   if (!user) return res.status(404).json({ error: 'User not found' });
   const password = String((req.body || {}).password || '');
-  if (password.length < 6) {
+  if (password && password.length < 6) {
     return res.status(400).json({ error: 'Password must be at least 6 characters' });
   }
-  await query('UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2', [
-    hashPassword(password),
-    user.id,
-  ]);
-  // Changing the password invalidates the user's existing sessions.
+  // A blank password resets the account: the user chooses a new one at next
+  // sign-in. A supplied password is set directly.
+  if (password) {
+    await query(
+      'UPDATE users SET password_hash = $1, must_set_password = FALSE, updated_at = now() WHERE id = $2',
+      [hashPassword(password), user.id]
+    );
+  } else {
+    await query(
+      "UPDATE users SET password_hash = '', must_set_password = TRUE, updated_at = now() WHERE id = $1",
+      [user.id]
+    );
+  }
+  // Resetting the password invalidates the user's existing sessions.
   await query('DELETE FROM sessions WHERE user_id = $1', [user.id]);
   res.json({ ok: true });
 });

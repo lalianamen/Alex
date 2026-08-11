@@ -153,17 +153,53 @@ async function init() {
   try {
     const { user } = await api('/api/me');
     currentUser = user;
-    showApp();
+    routeAfterAuth();
   } catch (_) {
     showLogin();
   }
 }
 
+// After a successful sign-in, send accounts that still need a password to the
+// setup screen; everyone else goes to the app.
+function routeAfterAuth() {
+  if (currentUser.must_set_password) showSetPassword();
+  else showApp();
+}
+
 function showLogin() {
   $('#app').classList.add('hidden');
+  $('#setpw-screen').classList.add('hidden');
   $('#login-screen').classList.remove('hidden');
   $('#login-input').focus();
 }
+
+function showSetPassword() {
+  $('#app').classList.add('hidden');
+  $('#login-screen').classList.add('hidden');
+  $('#setpw-name').textContent = currentUser.full_name;
+  $('#setpw-error').classList.add('hidden');
+  $('#setpw-new').value = '';
+  $('#setpw-confirm').value = '';
+  $('#setpw-screen').classList.remove('hidden');
+  $('#setpw-new').focus();
+}
+
+$('#setpw-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('#setpw-error').classList.add('hidden');
+  const pw = $('#setpw-new').value;
+  if (pw !== $('#setpw-confirm').value) {
+    return showFormError('#setpw-error', 'The passwords do not match');
+  }
+  try {
+    await api('/api/me/set-password', { method: 'POST', body: { new_password: pw } });
+    currentUser.must_set_password = false;
+    showApp();
+    toast('Password set');
+  } catch (err) {
+    showFormError('#setpw-error', err.message);
+  }
+});
 
 $('#login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -175,7 +211,7 @@ $('#login-form').addEventListener('submit', async (e) => {
     });
     currentUser = user;
     $('#password-input').value = '';
-    showApp();
+    routeAfterAuth();
   } catch (err) {
     showFormError('#login-error', err.message);
   }
@@ -721,7 +757,8 @@ function openUserModal(user, departments, sites) {
       <label>Full name <input type="text" id="u-name" required value="${esc(user ? user.full_name : '')}"></label>
       <label>Username <input type="text" id="u-login" required value="${esc(user ? user.login : '')}"
         pattern="[a-zA-Z0-9._\\-]{3,32}" title="3–32 characters: letters, digits, dot, hyphen, underscore"></label>
-      ${isNew ? `<label>Password ${pwField('u-password', 'required minlength="6" autocomplete="new-password"')}</label>` : ''}
+      ${isNew ? `<label>Password ${pwField('u-password', 'minlength="6" autocomplete="new-password"')}
+        <div class="muted small" style="margin-top:5px">Leave blank — the user sets it at first sign-in.</div></label>` : ''}
       <label>Role
         <select id="u-role">
           ${Object.entries(ROLE_LABEL).map(([k, v]) =>
@@ -791,12 +828,13 @@ function openUserModal(user, departments, sites) {
 function openResetPasswordModal(user) {
   openModal(`
     <h3>Reset password: ${esc(user.full_name)}</h3>
+    <p class="muted">Leave the field blank to have the user choose a new password at their next sign-in, or type one to set it directly.</p>
     <form id="reset-form">
-      <label>New password ${pwField('r-password', 'required minlength="6" autocomplete="new-password"')}</label>
+      <label>New password ${pwField('r-password', 'minlength="6" autocomplete="new-password"')}</label>
       <div id="r-error" class="form-error hidden"></div>
       <div class="modal-actions">
         <button type="button" class="btn" onclick="closeModal()">Cancel</button>
-        <button type="submit" class="btn btn-primary">Set password</button>
+        <button type="submit" class="btn btn-primary">Reset password</button>
       </div>
     </form>
   `);
@@ -808,7 +846,7 @@ function openResetPasswordModal(user) {
         body: { password: $('#r-password').value },
       });
       closeModal();
-      toast('Password set');
+      toast($('#r-password').value ? 'Password set' : 'The user will set a password at next sign-in');
     } catch (err) {
       showFormError('#r-error', err.message);
     }

@@ -104,7 +104,9 @@ CREATE TABLE IF NOT EXISTS users (
   role          TEXT NOT NULL CHECK (role IN ('admin','owner','site_admin','manager','executor')),
   department_id INTEGER REFERENCES departments(id),
   site_id       INTEGER REFERENCES sites(id),
-  is_active     BOOLEAN NOT NULL DEFAULT TRUE,
+  is_active         BOOLEAN NOT NULL DEFAULT TRUE,
+  -- When true the user has no usable password and must set one at next sign-in.
+  must_set_password BOOLEAN NOT NULL DEFAULT FALSE,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -162,6 +164,7 @@ const MIGRATE_SQL = `
 ALTER TABLE sites       ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE departments ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE users    ADD COLUMN IF NOT EXISTS site_id INTEGER REFERENCES sites(id);
+ALTER TABLE users    ADD COLUMN IF NOT EXISTS must_set_password BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE requests ADD COLUMN IF NOT EXISTS site_id INTEGER REFERENCES sites(id);
 ALTER TABLE requests ALTER COLUMN manager_id DROP NOT NULL;
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;

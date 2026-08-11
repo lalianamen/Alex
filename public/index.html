@@ -17,12 +17,35 @@
       </label>
       <label>Password
         <div class="pw-wrap">
-          <input type="password" id="password-input" autocomplete="current-password" required>
+          <input type="password" id="password-input" autocomplete="current-password">
           <button type="button" class="pw-toggle" onclick="togglePw(this)">Show</button>
         </div>
       </label>
       <div id="login-error" class="form-error hidden"></div>
       <button type="submit" class="btn btn-primary btn-block">Sign in</button>
+      <p class="muted small" style="margin:14px 0 0; text-align:center">Signing in for the first time? Leave the password blank.</p>
+    </form>
+  </div>
+
+  <!-- First-time password setup (shown when the account has no password yet) -->
+  <div id="setpw-screen" class="login-screen hidden">
+    <form id="setpw-form" class="login-card">
+      <h1>Set your password</h1>
+      <p class="muted">Welcome, <span id="setpw-name"></span>. Please choose a password to finish setting up your account.</p>
+      <label>New password
+        <div class="pw-wrap">
+          <input type="password" id="setpw-new" autocomplete="new-password" required minlength="6">
+          <button type="button" class="pw-toggle" onclick="togglePw(this)">Show</button>
+        </div>
+      </label>
+      <label>Confirm password
+        <div class="pw-wrap">
+          <input type="password" id="setpw-confirm" autocomplete="new-password" required minlength="6">
+          <button type="button" class="pw-toggle" onclick="togglePw(this)">Show</button>
+        </div>
+      </label>
+      <div id="setpw-error" class="form-error hidden"></div>
+      <button type="submit" class="btn btn-primary btn-block">Save and continue</button>
     </form>
   </div>
 
