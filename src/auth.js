@@ -1,39 +1,37 @@
 'use strict';
 
 const crypto = require('crypto');
-const { db } = require('./db');
+const { query, one } = require('./db');
 
-const SESSION_TTL_HOURS = 12;
 const COOKIE_NAME = 'sid';
 
-function createSession(userId) {
+async function createSession(userId) {
   const token = crypto.randomBytes(32).toString('hex');
-  db.prepare(
-    `INSERT INTO sessions (token, user_id, expires_at)
-     VALUES (?, ?, datetime('now', '+${SESSION_TTL_HOURS} hours'))`
-  ).run(token, userId);
+  await query(
+    `INSERT INTO sessions (token, user_id, expires_at) VALUES ($1, $2, now() + interval '12 hours')`,
+    [token, userId]
+  );
   return token;
 }
 
-function destroySession(token) {
-  db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+async function destroySession(token) {
+  await query('DELETE FROM sessions WHERE token = $1', [token]);
 }
 
-function getSessionUser(token) {
+async function getSessionUser(token) {
   if (!token) return null;
-  const row = db
-    .prepare(
-      `SELECT u.* FROM sessions s
-       JOIN users u ON u.id = s.user_id
-       WHERE s.token = ? AND s.expires_at > datetime('now') AND u.is_active = 1`
-    )
-    .get(token);
-  return row || null;
+  const user = await one(
+    `SELECT u.* FROM sessions s
+     JOIN users u ON u.id = s.user_id
+     WHERE s.token = $1 AND s.expires_at > now() AND u.is_active`,
+    [token]
+  );
+  return user || null;
 }
 
 // Middleware: подставляет req.user по cookie-сессии.
-function sessionMiddleware(req, res, next) {
-  req.user = getSessionUser(req.cookies[COOKIE_NAME]);
+async function sessionMiddleware(req, res, next) {
+  req.user = await getSessionUser(req.cookies[COOKIE_NAME]);
   next();
 }
 

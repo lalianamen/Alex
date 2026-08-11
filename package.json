@@ -4,13 +4,16 @@
   "description": "Приложение для создания и выполнения заявок с ролевой моделью доступа",
   "private": true,
   "main": "src/server.js",
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "start": "node src/server.js",
     "seed:demo": "node scripts/seed-demo.js"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3",
     "cookie-parser": "^1.4.7",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "pg": "^8.23.0"
   }
 }

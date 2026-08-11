@@ -23,31 +23,42 @@
   └──► Отменена  (администратором подразделения)
 ```
 
-## Запуск
+## Развёртывание на Vercel
 
-Требуется Node.js 18+.
+Приложение рассчитано на хостинг [Vercel](https://vercel.com) с базой данных
+PostgreSQL (бесплатная [Neon](https://neon.tech) из маркетплейса Vercel):
 
-```bash
-npm install
-npm start
-```
+1. Задеплойте проект на Vercel (через интеграцию с GitHub или `vercel deploy`).
+2. В панели проекта откройте **Storage → Create Database → Neon (Postgres)** и
+   подключите базу к проекту — переменная окружения `DATABASE_URL` добавится
+   автоматически.
+3. Переразверните проект (**Deployments → Redeploy**), чтобы переменная
+   подействовала.
 
-Приложение будет доступно на <http://localhost:3000> (порт меняется переменной `PORT`).
-
-При первом запуске автоматически создаётся администратор системы:
+Таблицы создаются автоматически при первом обращении. При пустой базе
+создаётся администратор системы:
 
 - логин: `admin`
 - пароль: `admin123` — **обязательно смените после первого входа**.
 
-База данных (SQLite) создаётся автоматически в каталоге `data/`
-(меняется переменной `DATA_DIR`).
+## Локальный запуск
+
+Требуется Node.js 18+ и строка подключения к любой базе PostgreSQL
+(подойдёт та же бесплатная Neon):
+
+```bash
+npm install
+DATABASE_URL="postgres://user:password@host/dbname" npm start
+```
+
+Приложение будет доступно на <http://localhost:3000> (порт меняется переменной `PORT`).
 
 ## Демо-данные
 
 Для демонстрации можно загрузить тестовые подразделения, пользователей и заявки:
 
 ```bash
-npm run seed:demo
+DATABASE_URL="postgres://..." npm run seed:demo
 ```
 
 Будут созданы учётные записи (логин / пароль):
@@ -77,16 +88,19 @@ npm run seed:demo
 
 ## Технологии
 
-- **Бэкенд**: Node.js, Express 5, SQLite (better-sqlite3)
+- **Бэкенд**: Node.js, Express 5, PostgreSQL (драйвер `pg`)
+- **Хостинг**: Vercel (статика + serverless-функция), база — Neon Postgres
 - **Аутентификация**: сессии в БД, cookie `httpOnly`, пароли — scrypt
 - **Фронтенд**: HTML/CSS/JavaScript без фреймворков (SPA)
 
 ## Структура проекта
 
 ```
+api/
+  index.js      — точка входа serverless-функции Vercel
 src/
-  server.js     — HTTP-сервер и все API-маршруты
-  db.js         — схема БД и инициализация
+  server.js     — Express-приложение и все API-маршруты
+  db.js         — подключение к PostgreSQL, схема, инициализация
   auth.js       — сессии и проверка прав
   passwords.js  — хэширование паролей (scrypt)
 public/
@@ -95,4 +109,5 @@ public/
   styles.css    — оформление
 scripts/
   seed-demo.js  — демонстрационные данные
+vercel.json     — маршрутизация /api/* в serverless-функцию
 ```

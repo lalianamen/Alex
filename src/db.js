@@ -1,16 +1,7 @@
 'use strict';
 
-const path = require('path');
-const fs = require('fs');
-const Database = require('better-sqlite3');
+const { Pool } = require('pg');
 const { hashPassword } = require('./passwords');
-
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
-fs.mkdirSync(DATA_DIR, { recursive: true });
-
-const db = new Database(path.join(DATA_DIR, 'app.db'));
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
 
 // Роли:
 //   admin      — администратор системы: управляет учётными записями и правами
@@ -31,34 +22,66 @@ const DEPT_ROLES = ['dept_admin', 'manager', 'executor'];
 const STATUSES = ['new', 'in_progress', 'done', 'closed', 'rejected', 'cancelled'];
 const PRIORITIES = ['low', 'normal', 'high'];
 
-db.exec(`
+// Строка подключения приходит из окружения. На Vercel интеграция с Neon
+// добавляет DATABASE_URL автоматически.
+const connectionString = process.env.DATABASE_URL || process.env.POSTGRES_URL || '';
+
+const pool = connectionString
+  ? new Pool({
+      connectionString,
+      max: 3,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+      // Локальный Postgres — без TLS; облачный (Neon и т.п.) — по строке подключения.
+      ssl: /localhost|127\.0\.0\.1/.test(connectionString) ? false : undefined,
+    })
+  : null;
+
+async function query(text, params) {
+  if (!pool) throw new Error('Не задана переменная окружения DATABASE_URL');
+  return pool.query(text, params);
+}
+
+async function one(text, params) {
+  const { rows } = await query(text, params);
+  return rows[0];
+}
+
+async function all(text, params) {
+  const { rows } = await query(text, params);
+  return rows;
+}
+
+const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS departments (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  id         SERIAL PRIMARY KEY,
   name       TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS users (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  login         TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  id            SERIAL PRIMARY KEY,
+  login         TEXT NOT NULL,
   password_hash TEXT NOT NULL,
   full_name     TEXT NOT NULL,
   role          TEXT NOT NULL CHECK (role IN ('admin','owner','dept_admin','manager','executor')),
   department_id INTEGER REFERENCES departments(id),
-  is_active     INTEGER NOT NULL DEFAULT 1,
-  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  is_active     BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login ON users (LOWER(login));
 
 CREATE TABLE IF NOT EXISTS sessions (
   token      TEXT PRIMARY KEY,
   user_id    INTEGER NOT NULL REFERENCES users(id),
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  expires_at TEXT NOT NULL
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS requests (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  id            SERIAL PRIMARY KEY,
   title         TEXT NOT NULL,
   description   TEXT NOT NULL DEFAULT '',
   priority      TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('low','normal','high')),
@@ -70,20 +93,20 @@ CREATE TABLE IF NOT EXISTS requests (
   executor_id   INTEGER REFERENCES users(id),
   due_date      TEXT,
   reject_reason TEXT,
-  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-  accepted_at   TEXT,
-  done_at       TEXT,
-  closed_at     TEXT,
-  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  accepted_at   TIMESTAMPTZ,
+  done_at       TIMESTAMPTZ,
+  closed_at     TIMESTAMPTZ,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS request_events (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  id         SERIAL PRIMARY KEY,
   request_id INTEGER NOT NULL REFERENCES requests(id),
   user_id    INTEGER NOT NULL REFERENCES users(id),
   action     TEXT NOT NULL,
   comment    TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_requests_department ON requests(department_id);
@@ -92,15 +115,32 @@ CREATE INDEX IF NOT EXISTS idx_requests_executor   ON requests(executor_id);
 CREATE INDEX IF NOT EXISTS idx_requests_status     ON requests(status);
 CREATE INDEX IF NOT EXISTS idx_events_request      ON request_events(request_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user       ON sessions(user_id);
-`);
+`;
 
-// Первый запуск: создаём администратора системы, чтобы было с чего начать.
-const usersCount = db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
-if (usersCount === 0) {
-  db.prepare(
-    `INSERT INTO users (login, password_hash, full_name, role) VALUES (?, ?, ?, 'admin')`
-  ).run('admin', hashPassword('admin123'), 'Администратор системы');
-  console.log('Создана учётная запись администратора: admin / admin123 (смените пароль!)');
+// Схема создаётся лениво при первом обращении (на бессерверном хостинге
+// каждый экземпляр проверяет её один раз; повторные вызовы бесплатны).
+let readyPromise = null;
+
+function ready() {
+  if (!readyPromise) {
+    readyPromise = initSchema().catch((e) => {
+      readyPromise = null; // при сбое даём шанс повторить на следующем запросе
+      throw e;
+    });
+  }
+  return readyPromise;
 }
 
-module.exports = { db, ROLES, DEPT_ROLES, STATUSES, PRIORITIES };
+async function initSchema() {
+  await query(SCHEMA_SQL);
+  const row = await one('SELECT COUNT(*)::int AS n FROM users');
+  if (row.n === 0) {
+    await query(
+      `INSERT INTO users (login, password_hash, full_name, role) VALUES ($1, $2, $3, 'admin')`,
+      ['admin', hashPassword('admin123'), 'Администратор системы']
+    );
+    console.log('Создана учётная запись администратора: admin / admin123 (смените пароль!)');
+  }
+}
+
+module.exports = { pool, query, one, all, ready, ROLES, DEPT_ROLES, STATUSES, PRIORITIES };
