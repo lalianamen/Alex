@@ -29,18 +29,18 @@ async function getSessionUser(token) {
   return user || null;
 }
 
-// Middleware: подставляет req.user по cookie-сессии.
+// Middleware: sets req.user from the cookie session.
 async function sessionMiddleware(req, res, next) {
   req.user = await getSessionUser(req.cookies[COOKIE_NAME]);
   next();
 }
 
-// Middleware-фабрика: требует авторизацию и (опционально) одну из ролей.
+// Middleware factory: requires authentication and (optionally) one of the roles.
 function requireRole(...roles) {
   return (req, res, next) => {
-    if (!req.user) return res.status(401).json({ error: 'Требуется вход в систему' });
+    if (!req.user) return res.status(401).json({ error: 'Authentication required' });
     if (roles.length && !roles.includes(req.user.role)) {
-      return res.status(403).json({ error: 'Недостаточно прав' });
+      return res.status(403).json({ error: 'Insufficient permissions' });
     }
     next();
   };

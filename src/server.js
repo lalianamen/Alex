@@ -20,12 +20,12 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
-// Все API-запросы: проверяем подключение БД, инициализируем схему, читаем сессию.
+// Every API request: check the DB connection, initialize the schema, read the session.
 app.use('/api', async (req, res, next) => {
   if (!pool) {
     return res.status(503).json({
       error:
-        'База данных не подключена. Создайте базу в панели Vercel (Storage → Neon) и переразверните приложение.',
+        'Database is not connected. Create a database in the Vercel dashboard (Storage → Neon) and redeploy the app.',
     });
   }
   await ready();
@@ -48,7 +48,7 @@ function publicUser(u) {
   };
 }
 
-// Числовой идентификатор из URL/параметров; null, если это не целое число.
+// Numeric id from a URL/param; null if it is not a positive integer.
 function toId(v) {
   const n = Number(v);
   return Number.isInteger(n) && n > 0 ? n : null;
@@ -72,7 +72,7 @@ async function getRequest(id) {
   return one(`${REQUEST_SELECT} WHERE r.id = $1`, [id]);
 }
 
-// Кому видна заявка (просмотр карточки и списка).
+// Who can see a request (card and list view).
 function canSeeRequest(user, r) {
   switch (user.role) {
     case 'owner':
@@ -95,22 +95,22 @@ async function addEvent(requestId, userId, action, comment) {
 }
 
 // ---------------------------------------------------------------------------
-// Авторизация
+// Authentication
 // ---------------------------------------------------------------------------
 
 app.post('/api/login', async (req, res) => {
   const { login, password } = req.body || {};
   if (!login || !password) {
-    return res.status(400).json({ error: 'Укажите логин и пароль' });
+    return res.status(400).json({ error: 'Enter username and password' });
   }
   const user = await one('SELECT * FROM users WHERE LOWER(login) = LOWER($1)', [
     String(login).trim(),
   ]);
   if (!user || !verifyPassword(String(password), user.password_hash)) {
-    return res.status(401).json({ error: 'Неверный логин или пароль' });
+    return res.status(401).json({ error: 'Invalid username or password' });
   }
   if (!user.is_active) {
-    return res.status(403).json({ error: 'Учётная запись отключена. Обратитесь к администратору' });
+    return res.status(403).json({ error: 'Account is disabled. Contact your administrator' });
   }
   const token = await createSession(user.id);
   res.cookie(COOKIE_NAME, token, { httpOnly: true, sameSite: 'lax', secure: SECURE_COOKIES });
@@ -124,20 +124,20 @@ app.post('/api/logout', async (req, res) => {
 });
 
 app.get('/api/me', (req, res) => {
-  if (!req.user) return res.status(401).json({ error: 'Требуется вход в систему' });
+  if (!req.user) return res.status(401).json({ error: 'Authentication required' });
   res.json({ user: publicUser(req.user) });
 });
 
 app.post('/api/me/password', requireRole(), async (req, res) => {
   const { old_password, new_password } = req.body || {};
   if (!old_password || !new_password) {
-    return res.status(400).json({ error: 'Укажите текущий и новый пароль' });
+    return res.status(400).json({ error: 'Enter your current and new password' });
   }
   if (String(new_password).length < 6) {
-    return res.status(400).json({ error: 'Новый пароль должен быть не короче 6 символов' });
+    return res.status(400).json({ error: 'New password must be at least 6 characters' });
   }
   if (!verifyPassword(String(old_password), req.user.password_hash)) {
-    return res.status(400).json({ error: 'Текущий пароль указан неверно' });
+    return res.status(400).json({ error: 'Current password is incorrect' });
   }
   await query('UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2', [
     hashPassword(String(new_password)),
@@ -147,7 +147,7 @@ app.post('/api/me/password', requireRole(), async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Подразделения
+// Departments
 // ---------------------------------------------------------------------------
 
 app.get('/api/departments', requireRole(), async (req, res) => {
@@ -156,13 +156,13 @@ app.get('/api/departments', requireRole(), async (req, res) => {
 
 app.post('/api/departments', requireRole('admin'), async (req, res) => {
   const name = String((req.body || {}).name || '').trim();
-  if (!name) return res.status(400).json({ error: 'Укажите название подразделения' });
+  if (!name) return res.status(400).json({ error: 'Enter a department name' });
   try {
     const department = await one('INSERT INTO departments (name) VALUES ($1) RETURNING *', [name]);
     res.json({ department });
   } catch (e) {
     if (e.code === '23505') {
-      return res.status(400).json({ error: 'Подразделение с таким названием уже существует' });
+      return res.status(400).json({ error: 'A department with this name already exists' });
     }
     throw e;
   }
@@ -170,9 +170,9 @@ app.post('/api/departments', requireRole('admin'), async (req, res) => {
 
 app.put('/api/departments/:id', requireRole('admin'), async (req, res) => {
   const name = String((req.body || {}).name || '').trim();
-  if (!name) return res.status(400).json({ error: 'Укажите название подразделения' });
+  if (!name) return res.status(400).json({ error: 'Enter a department name' });
   const dept = await one('SELECT * FROM departments WHERE id = $1', [toId(req.params.id)]);
-  if (!dept) return res.status(404).json({ error: 'Подразделение не найдено' });
+  if (!dept) return res.status(404).json({ error: 'Department not found' });
   try {
     const department = await one('UPDATE departments SET name = $1 WHERE id = $2 RETURNING *', [
       name,
@@ -181,14 +181,14 @@ app.put('/api/departments/:id', requireRole('admin'), async (req, res) => {
     res.json({ department });
   } catch (e) {
     if (e.code === '23505') {
-      return res.status(400).json({ error: 'Подразделение с таким названием уже существует' });
+      return res.status(400).json({ error: 'A department with this name already exists' });
     }
     throw e;
   }
 });
 
 // ---------------------------------------------------------------------------
-// Пользователи (администратор системы)
+// Users (system administrator)
 // ---------------------------------------------------------------------------
 
 async function validateUserPayload(body, { requirePassword }) {
@@ -198,19 +198,19 @@ async function validateUserPayload(body, { requirePassword }) {
   const password = body.password == null ? '' : String(body.password);
   const department_id = body.department_id ? toId(body.department_id) : null;
 
-  if (!login) return { error: 'Укажите логин' };
+  if (!login) return { error: 'Enter a username' };
   if (!/^[a-zA-Z0-9._-]{3,32}$/.test(login)) {
-    return { error: 'Логин: 3–32 символа, латиница, цифры, точка, дефис, подчёркивание' };
+    return { error: 'Username: 3–32 characters, letters, digits, dot, hyphen, underscore' };
   }
-  if (!full_name) return { error: 'Укажите ФИО' };
-  if (!ROLES.includes(role)) return { error: 'Некорректная роль' };
+  if (!full_name) return { error: 'Enter a full name' };
+  if (!ROLES.includes(role)) return { error: 'Invalid role' };
   if (requirePassword && password.length < 6) {
-    return { error: 'Пароль должен быть не короче 6 символов' };
+    return { error: 'Password must be at least 6 characters' };
   }
   if (DEPT_ROLES.includes(role)) {
-    if (!department_id) return { error: 'Для этой роли необходимо указать подразделение' };
+    if (!department_id) return { error: 'This role requires a department' };
     const dept = await one('SELECT id FROM departments WHERE id = $1', [department_id]);
-    if (!dept) return { error: 'Подразделение не найдено' };
+    if (!dept) return { error: 'Department not found' };
   }
   return {
     value: {
@@ -239,7 +239,7 @@ app.post('/api/users', requireRole('admin'), async (req, res) => {
   if (check.error) return res.status(400).json({ error: check.error });
   const v = check.value;
   const exists = await one('SELECT id FROM users WHERE LOWER(login) = LOWER($1)', [v.login]);
-  if (exists) return res.status(400).json({ error: 'Пользователь с таким логином уже существует' });
+  if (exists) return res.status(400).json({ error: 'A user with this username already exists' });
   const user = await one(
     `INSERT INTO users (login, password_hash, full_name, role, department_id)
      VALUES ($1, $2, $3, $4, $5) RETURNING *`,
@@ -250,7 +250,7 @@ app.post('/api/users', requireRole('admin'), async (req, res) => {
 
 app.put('/api/users/:id', requireRole('admin'), async (req, res) => {
   const user = await one('SELECT * FROM users WHERE id = $1', [toId(req.params.id)]);
-  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  if (!user) return res.status(404).json({ error: 'User not found' });
   const check = await validateUserPayload(req.body || {}, { requirePassword: false });
   if (check.error) return res.status(400).json({ error: check.error });
   const v = check.value;
@@ -258,7 +258,7 @@ app.put('/api/users/:id', requireRole('admin'), async (req, res) => {
     v.login,
     user.id,
   ]);
-  if (exists) return res.status(400).json({ error: 'Пользователь с таким логином уже существует' });
+  if (exists) return res.status(400).json({ error: 'A user with this username already exists' });
   const updated = await one(
     `UPDATE users SET login = $1, full_name = $2, role = $3, department_id = $4, updated_at = now()
      WHERE id = $5 RETURNING *`,
@@ -269,25 +269,25 @@ app.put('/api/users/:id', requireRole('admin'), async (req, res) => {
 
 app.post('/api/users/:id/password', requireRole('admin'), async (req, res) => {
   const user = await one('SELECT * FROM users WHERE id = $1', [toId(req.params.id)]);
-  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  if (!user) return res.status(404).json({ error: 'User not found' });
   const password = String((req.body || {}).password || '');
   if (password.length < 6) {
-    return res.status(400).json({ error: 'Пароль должен быть не короче 6 символов' });
+    return res.status(400).json({ error: 'Password must be at least 6 characters' });
   }
   await query('UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2', [
     hashPassword(password),
     user.id,
   ]);
-  // Смена пароля закрывает старые сессии пользователя.
+  // Changing the password invalidates the user's existing sessions.
   await query('DELETE FROM sessions WHERE user_id = $1', [user.id]);
   res.json({ ok: true });
 });
 
 app.post('/api/users/:id/deactivate', requireRole('admin'), async (req, res) => {
   const user = await one('SELECT * FROM users WHERE id = $1', [toId(req.params.id)]);
-  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  if (!user) return res.status(404).json({ error: 'User not found' });
   if (user.id === req.user.id) {
-    return res.status(400).json({ error: 'Нельзя отключить собственную учётную запись' });
+    return res.status(400).json({ error: 'You cannot disable your own account' });
   }
   await query('UPDATE users SET is_active = FALSE, updated_at = now() WHERE id = $1', [user.id]);
   await query('DELETE FROM sessions WHERE user_id = $1', [user.id]);
@@ -296,13 +296,13 @@ app.post('/api/users/:id/deactivate', requireRole('admin'), async (req, res) => 
 
 app.post('/api/users/:id/restore', requireRole('admin'), async (req, res) => {
   const user = await one('SELECT * FROM users WHERE id = $1', [toId(req.params.id)]);
-  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  if (!user) return res.status(404).json({ error: 'User not found' });
   await query('UPDATE users SET is_active = TRUE, updated_at = now() WHERE id = $1', [user.id]);
   res.json({ ok: true });
 });
 
-// Справочники для форм: руководители своего подразделения (для админа подразделения)
-// и исполнители своего подразделения (для руководителя).
+// Reference lists for forms: supervisors of the current department (for the
+// department admin) and executors of the current department (for the supervisor).
 app.get('/api/users/managers', requireRole('dept_admin'), async (req, res) => {
   const managers = await all(
     `SELECT id, full_name FROM users
@@ -324,7 +324,7 @@ app.get('/api/users/executors', requireRole('manager'), async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Заявки
+// Requests
 // ---------------------------------------------------------------------------
 
 app.get(
@@ -376,7 +376,7 @@ app.get(
   async (req, res) => {
     const r = await getRequest(toId(req.params.id));
     if (!r || !canSeeRequest(req.user, r)) {
-      return res.status(404).json({ error: 'Заявка не найдена' });
+      return res.status(404).json({ error: 'Request not found' });
     }
     const events = await all(
       `SELECT e.*, u.full_name AS user_name
@@ -388,8 +388,8 @@ app.get(
   }
 );
 
-// Создание заявки — администратор подразделения, адресуется руководителю работ
-// своего подразделения.
+// Create a request — department administrator; addressed to a work supervisor
+// of their own department.
 app.post('/api/requests', requireRole('dept_admin'), async (req, res) => {
   const b = req.body || {};
   const title = String(b.title || '').trim();
@@ -398,10 +398,10 @@ app.post('/api/requests', requireRole('dept_admin'), async (req, res) => {
   const manager_id = toId(b.manager_id);
   const due_date = b.due_date ? String(b.due_date) : null;
 
-  if (!title) return res.status(400).json({ error: 'Укажите тему заявки' });
-  if (!manager_id) return res.status(400).json({ error: 'Выберите руководителя работ' });
+  if (!title) return res.status(400).json({ error: 'Enter a request subject' });
+  if (!manager_id) return res.status(400).json({ error: 'Select a supervisor' });
   if (due_date && !/^\d{4}-\d{2}-\d{2}$/.test(due_date)) {
-    return res.status(400).json({ error: 'Некорректный срок выполнения' });
+    return res.status(400).json({ error: 'Invalid due date' });
   }
 
   const manager = await one(
@@ -409,7 +409,7 @@ app.post('/api/requests', requireRole('dept_admin'), async (req, res) => {
     [manager_id]
   );
   if (!manager || manager.department_id !== req.user.department_id) {
-    return res.status(400).json({ error: 'Руководитель должен относиться к вашему подразделению' });
+    return res.status(400).json({ error: 'The supervisor must belong to your department' });
   }
 
   const row = await one(
@@ -421,22 +421,22 @@ app.post('/api/requests', requireRole('dept_admin'), async (req, res) => {
   res.json({ request: await getRequest(row.id) });
 });
 
-// Принять в работу и назначить исполнителя — руководитель работ.
+// Accept and assign an executor — work supervisor.
 app.post('/api/requests/:id/accept', requireRole('manager'), async (req, res) => {
   const r = await getRequest(toId(req.params.id));
   if (!r || r.manager_id !== req.user.id) {
-    return res.status(404).json({ error: 'Заявка не найдена' });
+    return res.status(404).json({ error: 'Request not found' });
   }
-  if (r.status !== 'new') return res.status(400).json({ error: 'Заявка уже обработана' });
+  if (r.status !== 'new') return res.status(400).json({ error: 'Request has already been processed' });
 
   const executor_id = toId((req.body || {}).executor_id);
-  if (!executor_id) return res.status(400).json({ error: 'Выберите исполнителя' });
+  if (!executor_id) return res.status(400).json({ error: 'Select an executor' });
   const executor = await one(
     `SELECT * FROM users WHERE id = $1 AND role = 'executor' AND is_active`,
     [executor_id]
   );
   if (!executor || executor.department_id !== req.user.department_id) {
-    return res.status(400).json({ error: 'Исполнитель должен относиться к вашему подразделению' });
+    return res.status(400).json({ error: 'The executor must belong to your department' });
   }
 
   await query(
@@ -444,49 +444,49 @@ app.post('/api/requests/:id/accept', requireRole('manager'), async (req, res) =>
        accepted_at = now(), updated_at = now() WHERE id = $2`,
     [executor_id, r.id]
   );
-  await addEvent(r.id, req.user.id, 'accepted', `Исполнитель: ${executor.full_name}`);
+  await addEvent(r.id, req.user.id, 'accepted', `Executor: ${executor.full_name}`);
   res.json({ request: await getRequest(r.id) });
 });
 
-// Сменить исполнителя по заявке в работе — руководитель работ.
+// Reassign the executor on a request in progress — work supervisor.
 app.post('/api/requests/:id/assign', requireRole('manager'), async (req, res) => {
   const r = await getRequest(toId(req.params.id));
   if (!r || r.manager_id !== req.user.id) {
-    return res.status(404).json({ error: 'Заявка не найдена' });
+    return res.status(404).json({ error: 'Request not found' });
   }
   if (r.status !== 'in_progress') {
-    return res.status(400).json({ error: 'Сменить исполнителя можно только по заявке в работе' });
+    return res.status(400).json({ error: 'You can reassign only a request that is in progress' });
   }
 
   const executor_id = toId((req.body || {}).executor_id);
-  if (!executor_id) return res.status(400).json({ error: 'Выберите исполнителя' });
+  if (!executor_id) return res.status(400).json({ error: 'Select an executor' });
   const executor = await one(
     `SELECT * FROM users WHERE id = $1 AND role = 'executor' AND is_active`,
     [executor_id]
   );
   if (!executor || executor.department_id !== req.user.department_id) {
-    return res.status(400).json({ error: 'Исполнитель должен относиться к вашему подразделению' });
+    return res.status(400).json({ error: 'The executor must belong to your department' });
   }
 
   await query('UPDATE requests SET executor_id = $1, updated_at = now() WHERE id = $2', [
     executor_id,
     r.id,
   ]);
-  await addEvent(r.id, req.user.id, 'reassigned', `Новый исполнитель: ${executor.full_name}`);
+  await addEvent(r.id, req.user.id, 'reassigned', `New executor: ${executor.full_name}`);
   res.json({ request: await getRequest(r.id) });
 });
 
-// Отклонить заявку — руководитель работ (с указанием причины).
+// Reject a request — work supervisor (with a reason).
 app.post('/api/requests/:id/reject', requireRole('manager'), async (req, res) => {
   const r = await getRequest(toId(req.params.id));
   if (!r || r.manager_id !== req.user.id) {
-    return res.status(404).json({ error: 'Заявка не найдена' });
+    return res.status(404).json({ error: 'Request not found' });
   }
   if (r.status !== 'new') {
-    return res.status(400).json({ error: 'Отклонить можно только новую заявку' });
+    return res.status(400).json({ error: 'Only a new request can be rejected' });
   }
   const reason = String((req.body || {}).reason || '').trim();
-  if (!reason) return res.status(400).json({ error: 'Укажите причину отклонения' });
+  if (!reason) return res.status(400).json({ error: 'Enter a rejection reason' });
 
   await query(
     `UPDATE requests SET status = 'rejected', reject_reason = $1, updated_at = now() WHERE id = $2`,
@@ -496,14 +496,14 @@ app.post('/api/requests/:id/reject', requireRole('manager'), async (req, res) =>
   res.json({ request: await getRequest(r.id) });
 });
 
-// Отметить выполнение — исполнитель.
+// Mark as completed — executor.
 app.post('/api/requests/:id/done', requireRole('executor'), async (req, res) => {
   const r = await getRequest(toId(req.params.id));
   if (!r || r.executor_id !== req.user.id) {
-    return res.status(404).json({ error: 'Заявка не найдена' });
+    return res.status(404).json({ error: 'Request not found' });
   }
   if (r.status !== 'in_progress') {
-    return res.status(400).json({ error: 'Заявка не находится в работе' });
+    return res.status(400).json({ error: 'Request is not in progress' });
   }
   const comment = String((req.body || {}).comment || '').trim();
 
@@ -515,14 +515,14 @@ app.post('/api/requests/:id/done', requireRole('executor'), async (req, res) => 
   res.json({ request: await getRequest(r.id) });
 });
 
-// Подтвердить выполнение и закрыть — руководитель работ.
+// Confirm completion and close — work supervisor.
 app.post('/api/requests/:id/close', requireRole('manager'), async (req, res) => {
   const r = await getRequest(toId(req.params.id));
   if (!r || r.manager_id !== req.user.id) {
-    return res.status(404).json({ error: 'Заявка не найдена' });
+    return res.status(404).json({ error: 'Request not found' });
   }
   if (r.status !== 'done') {
-    return res.status(400).json({ error: 'Закрыть можно только выполненную заявку' });
+    return res.status(400).json({ error: 'Only a completed request can be closed' });
   }
 
   await query(
@@ -533,17 +533,17 @@ app.post('/api/requests/:id/close', requireRole('manager'), async (req, res) => 
   res.json({ request: await getRequest(r.id) });
 });
 
-// Вернуть выполненную заявку в работу (доработка) — руководитель работ.
+// Return a completed request for rework — work supervisor.
 app.post('/api/requests/:id/reopen', requireRole('manager'), async (req, res) => {
   const r = await getRequest(toId(req.params.id));
   if (!r || r.manager_id !== req.user.id) {
-    return res.status(404).json({ error: 'Заявка не найдена' });
+    return res.status(404).json({ error: 'Request not found' });
   }
   if (r.status !== 'done') {
-    return res.status(400).json({ error: 'Вернуть в работу можно только выполненную заявку' });
+    return res.status(400).json({ error: 'Only a completed request can be returned for rework' });
   }
   const comment = String((req.body || {}).comment || '').trim();
-  if (!comment) return res.status(400).json({ error: 'Укажите, что нужно доработать' });
+  if (!comment) return res.status(400).json({ error: 'Describe what needs to be reworked' });
 
   await query(
     `UPDATE requests SET status = 'in_progress', done_at = NULL, updated_at = now() WHERE id = $1`,
@@ -553,14 +553,14 @@ app.post('/api/requests/:id/reopen', requireRole('manager'), async (req, res) =>
   res.json({ request: await getRequest(r.id) });
 });
 
-// Отменить новую заявку — администратор подразделения (своё подразделение).
+// Cancel a new request — department administrator (own department).
 app.post('/api/requests/:id/cancel', requireRole('dept_admin'), async (req, res) => {
   const r = await getRequest(toId(req.params.id));
   if (!r || r.department_id !== req.user.department_id) {
-    return res.status(404).json({ error: 'Заявка не найдена' });
+    return res.status(404).json({ error: 'Request not found' });
   }
   if (r.status !== 'new') {
-    return res.status(400).json({ error: 'Отменить можно только новую заявку' });
+    return res.status(400).json({ error: 'Only a new request can be cancelled' });
   }
 
   await query(`UPDATE requests SET status = 'cancelled', updated_at = now() WHERE id = $1`, [r.id]);
@@ -569,7 +569,7 @@ app.post('/api/requests/:id/cancel', requireRole('dept_admin'), async (req, res)
 });
 
 // ---------------------------------------------------------------------------
-// Отчёты (собственник)
+// Reports (owner)
 // ---------------------------------------------------------------------------
 
 function periodFilter(q) {
@@ -620,15 +620,15 @@ app.get('/api/reports/summary', requireRole('owner'), async (req, res) => {
   res.json({ by_department: byDepartment, totals });
 });
 
-const STATUS_RU = {
-  new: 'Новая',
-  in_progress: 'В работе',
-  done: 'Выполнена',
-  closed: 'Закрыта',
-  rejected: 'Отклонена',
-  cancelled: 'Отменена',
+const STATUS_LABEL = {
+  new: 'New',
+  in_progress: 'In progress',
+  done: 'Completed',
+  closed: 'Closed',
+  rejected: 'Rejected',
+  cancelled: 'Cancelled',
 };
-const PRIORITY_RU = { low: 'Низкий', normal: 'Обычный', high: 'Высокий' };
+const PRIORITY_LABEL = { low: 'Low', normal: 'Normal', high: 'High' };
 
 app.get('/api/reports/export.csv', requireRole('owner'), async (req, res) => {
   const { where, params } = periodFilter(req.query);
@@ -637,44 +637,44 @@ app.get('/api/reports/export.csv', requireRole('owner'), async (req, res) => {
 
   const esc = (v) => {
     const s = v == null ? '' : String(v);
-    return /[";\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const fmtTs = (v) => (v instanceof Date ? v.toISOString().replace('T', ' ').slice(0, 16) : v);
   const header = [
-    '№', 'Тема', 'Подразделение', 'Статус', 'Приоритет', 'Автор',
-    'Руководитель', 'Исполнитель', 'Создана (UTC)', 'Принята (UTC)',
-    'Выполнена (UTC)', 'Закрыта (UTC)', 'Срок',
+    '#', 'Subject', 'Department', 'Status', 'Priority', 'Created by',
+    'Supervisor', 'Executor', 'Created (UTC)', 'Accepted (UTC)',
+    'Completed (UTC)', 'Closed (UTC)', 'Due',
   ];
-  const lines = [header.join(';')];
+  const lines = [header.join(',')];
   for (const r of rows) {
     lines.push(
       [
-        r.id, r.title, r.department_name, STATUS_RU[r.status] || r.status,
-        PRIORITY_RU[r.priority] || r.priority, r.created_by_name, r.manager_name,
+        r.id, r.title, r.department_name, STATUS_LABEL[r.status] || r.status,
+        PRIORITY_LABEL[r.priority] || r.priority, r.created_by_name, r.manager_name,
         r.executor_name, fmtTs(r.created_at), fmtTs(r.accepted_at),
         fmtTs(r.done_at), fmtTs(r.closed_at), r.due_date,
       ]
         .map(esc)
-        .join(';')
+        .join(',')
     );
   }
-  // BOM — чтобы Excel корректно открыл кириллицу.
+  // BOM so Excel opens the file as UTF-8.
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="report.csv"');
-  res.send('\uFEFF' + lines.join('\r\n'));
+  res.send('﻿' + lines.join('\r\n'));
 });
 
 // ---------------------------------------------------------------------------
 
-app.use('/api', (req, res) => res.status(404).json({ error: 'Не найдено' }));
+app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
 app.use((err, req, res, next) => {
   console.error(err);
-  res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  res.status(500).json({ error: 'Internal server error' });
 });
 
 if (require.main === module) {
-  app.listen(PORT, () => console.log(`Сервер запущен: http://localhost:${PORT}`));
+  app.listen(PORT, () => console.log(`Server running: http://localhost:${PORT}`));
 }
 
 module.exports = app;

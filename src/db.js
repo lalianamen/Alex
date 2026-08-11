@@ -3,28 +3,52 @@
 const { Pool } = require('pg');
 const { hashPassword } = require('./passwords');
 
-// Роли:
-//   admin      — администратор системы: управляет учётными записями и правами
-//   owner      — собственник: видит все подразделения и заявки, формирует отчёты
-//   dept_admin — администратор подразделения: создаёт заявки руководителям работ
-//   manager    — руководитель исполняемых работ: принимает заявки, назначает исполнителей
-//   executor   — исполнитель: видит и выполняет только свои работы
+// Roles:
+//   admin      — system administrator: manages user accounts and permissions
+//   owner      — owner: sees all departments and requests, builds reports
+//   dept_admin — department administrator: creates requests for work supervisors
+//   manager    — work supervisor: accepts requests, assigns executors
+//   executor   — executor: sees and performs only their own work
 const ROLES = ['admin', 'owner', 'dept_admin', 'manager', 'executor'];
 const DEPT_ROLES = ['dept_admin', 'manager', 'executor'];
 
-// Статусы заявки:
-//   new         — новая, ожидает решения руководителя
-//   in_progress — принята в работу, назначен исполнитель
-//   done        — исполнитель отметил выполнение
-//   closed      — руководитель подтвердил и закрыл заявку
-//   rejected    — руководитель отклонил заявку
-//   cancelled   — администратор подразделения отменил заявку
+// Request statuses:
+//   new         — new, awaiting the supervisor's decision
+//   in_progress — accepted for work, an executor is assigned
+//   done        — the executor marked it completed
+//   closed      — the supervisor confirmed and closed the request
+//   rejected    — the supervisor rejected the request
+//   cancelled   — the department administrator cancelled the request
 const STATUSES = ['new', 'in_progress', 'done', 'closed', 'rejected', 'cancelled'];
 const PRIORITIES = ['low', 'normal', 'high'];
 
-// Строка подключения приходит из окружения. На Vercel интеграция с Neon
-// добавляет DATABASE_URL автоматически.
-const connectionString = process.env.DATABASE_URL || process.env.POSTGRES_URL || '';
+// The connection string comes from the environment. The Vercel + Neon
+// integration injects it, but the variable name depends on the "Custom Prefix"
+// chosen when connecting (e.g. DATABASE_URL, POSTGRES_URL, STORAGE_DATABASE_URL).
+// Resolve it by name first, then by scanning for any postgres:// value, so the
+// app works regardless of the prefix. Pooled URLs are preferred for serverless.
+function resolveConnectionString() {
+  const env = process.env;
+  if (env.DATABASE_URL) return env.DATABASE_URL;
+  if (env.POSTGRES_URL) return env.POSTGRES_URL;
+
+  const isPg = (v) => typeof v === 'string' && /^postgres(ql)?:\/\//.test(v);
+  const entries = Object.entries(env).filter(([, v]) => isPg(v));
+  const pooled = entries.filter(([k]) => !/UNPOOLED|NON_POOLING/i.test(k));
+  const pick = (arr, re) => (arr.find(([k]) => re.test(k)) || [])[1];
+
+  return (
+    pick(pooled, /DATABASE_URL$/i) ||
+    pick(pooled, /POSTGRES_URL$/i) ||
+    pick(pooled, /(DATABASE|POSTGRES).*URL/i) ||
+    (pooled[0] && pooled[0][1]) ||
+    (entries[0] && entries[0][1]) ||
+    ''
+  );
+}
+
+const connectionString = resolveConnectionString();
+const isLocal = /localhost|127\.0\.0\.1/.test(connectionString);
 
 const pool = connectionString
   ? new Pool({
@@ -32,13 +56,13 @@ const pool = connectionString
       max: 3,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 10000,
-      // Локальный Postgres — без TLS; облачный (Neon и т.п.) — по строке подключения.
-      ssl: /localhost|127\.0\.0\.1/.test(connectionString) ? false : undefined,
+      // Local Postgres runs without TLS; cloud Postgres (Neon, etc.) requires it.
+      ssl: isLocal ? false : { rejectUnauthorized: false },
     })
   : null;
 
 async function query(text, params) {
-  if (!pool) throw new Error('Не задана переменная окружения DATABASE_URL');
+  if (!pool) throw new Error('DATABASE_URL environment variable is not set');
   return pool.query(text, params);
 }
 
@@ -117,14 +141,14 @@ CREATE INDEX IF NOT EXISTS idx_events_request      ON request_events(request_id)
 CREATE INDEX IF NOT EXISTS idx_sessions_user       ON sessions(user_id);
 `;
 
-// Схема создаётся лениво при первом обращении (на бессерверном хостинге
-// каждый экземпляр проверяет её один раз; повторные вызовы бесплатны).
+// The schema is created lazily on first use (on serverless hosting each
+// instance checks it once; subsequent calls are free).
 let readyPromise = null;
 
 function ready() {
   if (!readyPromise) {
     readyPromise = initSchema().catch((e) => {
-      readyPromise = null; // при сбое даём шанс повторить на следующем запросе
+      readyPromise = null; // on failure, allow a retry on the next request
       throw e;
     });
   }
@@ -137,9 +161,9 @@ async function initSchema() {
   if (row.n === 0) {
     await query(
       `INSERT INTO users (login, password_hash, full_name, role) VALUES ($1, $2, $3, 'admin')`,
-      ['admin', hashPassword('admin123'), 'Администратор системы']
+      ['admin', hashPassword('admin123'), 'System Administrator']
     );
-    console.log('Создана учётная запись администратора: admin / admin123 (смените пароль!)');
+    console.log('Created administrator account: admin / admin123 (please change the password!)');
   }
 }
 

@@ -1,5 +1,5 @@
 'use strict';
 
-// Точка входа для Vercel: все запросы /api/* направляются сюда (см. vercel.json),
-// Express-приложение получает исходный URL запроса и обрабатывает маршруты как обычно.
+// Entry point for Vercel: all /api/* requests are routed here (see vercel.json).
+// The Express app receives the original request URL and handles routes as usual.
 module.exports = require('../src/server');

@@ -1,7 +1,7 @@
 {
   "name": "request-management-app",
   "version": "1.0.0",
-  "description": "Приложение для создания и выполнения заявок с ролевой моделью доступа",
+  "description": "Web app for creating and fulfilling work requests with role-based access",
   "private": true,
   "main": "src/server.js",
   "engines": {

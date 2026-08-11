@@ -1,46 +1,46 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Система заявок</title>
+  <title>Request Management</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <!-- Экран входа -->
+  <!-- Login screen -->
   <div id="login-screen" class="login-screen hidden">
     <form id="login-form" class="login-card">
-      <h1>Система заявок</h1>
-      <p class="muted">Вход в систему</p>
-      <label>Логин
+      <h1>Request Management</h1>
+      <p class="muted">Sign in to your account</p>
+      <label>Username
         <input type="text" id="login-input" autocomplete="username" required>
       </label>
-      <label>Пароль
+      <label>Password
         <input type="password" id="password-input" autocomplete="current-password" required>
       </label>
       <div id="login-error" class="form-error hidden"></div>
-      <button type="submit" class="btn btn-primary btn-block">Войти</button>
+      <button type="submit" class="btn btn-primary btn-block">Sign in</button>
     </form>
   </div>
 
-  <!-- Основной интерфейс -->
+  <!-- Main interface -->
   <div id="app" class="hidden">
     <header class="topbar">
-      <div class="topbar-brand">Система заявок</div>
+      <div class="topbar-brand">Request Management</div>
       <nav id="nav-tabs" class="topbar-nav"></nav>
       <div class="topbar-user">
         <div class="user-info">
           <span id="user-name"></span>
           <span id="user-role" class="muted small"></span>
         </div>
-        <button id="btn-change-password" class="btn btn-ghost" title="Сменить пароль">Пароль</button>
-        <button id="btn-logout" class="btn btn-ghost">Выйти</button>
+        <button id="btn-change-password" class="btn btn-ghost" title="Change password">Password</button>
+        <button id="btn-logout" class="btn btn-ghost">Sign out</button>
       </div>
     </header>
     <main id="main" class="main"></main>
   </div>
 
-  <!-- Модальное окно -->
+  <!-- Modal -->
   <div id="modal-backdrop" class="modal-backdrop hidden">
     <div id="modal" class="modal"></div>
   </div>
