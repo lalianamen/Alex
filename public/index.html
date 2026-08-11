@@ -16,7 +16,10 @@
         <input type="text" id="login-input" autocomplete="username" required>
       </label>
       <label>Password
-        <input type="password" id="password-input" autocomplete="current-password" required>
+        <div class="pw-wrap">
+          <input type="password" id="password-input" autocomplete="current-password" required>
+          <button type="button" class="pw-toggle" onclick="togglePw(this)">Show</button>
+        </div>
       </label>
       <div id="login-error" class="form-error hidden"></div>
       <button type="submit" class="btn btn-primary btn-block">Sign in</button>

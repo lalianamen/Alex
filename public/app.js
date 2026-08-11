@@ -108,6 +108,24 @@ function showFormError(sel, msg) {
   el.classList.remove('hidden');
 }
 
+// Toggle a password field between hidden and visible. Called from inline
+// onclick in template strings, so it must be reachable on the global scope.
+function togglePw(btn) {
+  const input = btn.parentNode.querySelector('input');
+  if (!input) return;
+  const reveal = input.type === 'password';
+  input.type = reveal ? 'text' : 'password';
+  btn.textContent = reveal ? 'Hide' : 'Show';
+}
+
+// Password input wrapped with a Show/Hide toggle. `attrs` is extra input HTML.
+function pwField(id, attrs = '') {
+  return `<div class="pw-wrap">
+    <input type="password" id="${id}" ${attrs}>
+    <button type="button" class="pw-toggle" onclick="togglePw(this)">Show</button>
+  </div>`;
+}
+
 function statusBadge(s) {
   return `<span class="badge badge-${esc(s)}">${esc(STATUS_LABEL[s] || s)}</span>`;
 }
@@ -162,8 +180,8 @@ $('#btn-change-password').addEventListener('click', () => {
   openModal(`
     <h3>Change password</h3>
     <form id="pw-form">
-      <label>Current password <input type="password" id="pw-old" required autocomplete="current-password"></label>
-      <label>New password <input type="password" id="pw-new" required minlength="6" autocomplete="new-password"></label>
+      <label>Current password ${pwField('pw-old', 'required autocomplete="current-password"')}</label>
+      <label>New password ${pwField('pw-new', 'required minlength="6" autocomplete="new-password"')}</label>
       <div id="pw-error" class="form-error hidden"></div>
       <div class="modal-actions">
         <button type="button" class="btn" onclick="closeModal()">Cancel</button>
@@ -658,7 +676,7 @@ function openUserModal(user, departments) {
       <label>Full name <input type="text" id="u-name" required value="${esc(user ? user.full_name : '')}"></label>
       <label>Username <input type="text" id="u-login" required value="${esc(user ? user.login : '')}"
         pattern="[a-zA-Z0-9._\\-]{3,32}" title="3–32 characters: letters, digits, dot, hyphen, underscore"></label>
-      ${isNew ? '<label>Password <input type="password" id="u-password" required minlength="6" autocomplete="new-password"></label>' : ''}
+      ${isNew ? `<label>Password ${pwField('u-password', 'required minlength="6" autocomplete="new-password"')}</label>` : ''}
       <label>Role
         <select id="u-role">
           ${Object.entries(ROLE_LABEL).map(([k, v]) =>
@@ -716,7 +734,7 @@ function openResetPasswordModal(user) {
   openModal(`
     <h3>Reset password: ${esc(user.full_name)}</h3>
     <form id="reset-form">
-      <label>New password <input type="password" id="r-password" required minlength="6" autocomplete="new-password"></label>
+      <label>New password ${pwField('r-password', 'required minlength="6" autocomplete="new-password"')}</label>
       <div id="r-error" class="form-error hidden"></div>
       <div class="modal-actions">
         <button type="button" class="btn" onclick="closeModal()">Cancel</button>
