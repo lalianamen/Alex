@@ -187,16 +187,29 @@ function showSetPassword() {
 $('#setpw-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   $('#setpw-error').classList.add('hidden');
+  const btn = $('#setpw-form button[type="submit"]');
   const pw = $('#setpw-new').value;
+  if (pw.length < 6) {
+    return showFormError('#setpw-error', 'Password must be at least 6 characters');
+  }
   if (pw !== $('#setpw-confirm').value) {
     return showFormError('#setpw-error', 'The passwords do not match');
   }
+  btn.disabled = true; // guard against double-submit
   try {
     await api('/api/me/set-password', { method: 'POST', body: { new_password: pw } });
     currentUser.must_set_password = false;
     showApp();
     toast('Password set');
   } catch (err) {
+    // The password is already set (e.g. a double submit, or it was set in
+    // another tab) — the account is ready, so just continue into the app.
+    if (/already set/i.test(err.message)) {
+      try { currentUser = (await api('/api/me')).user; } catch (_) {}
+      showApp();
+      return;
+    }
+    btn.disabled = false;
     showFormError('#setpw-error', err.message);
   }
 });
