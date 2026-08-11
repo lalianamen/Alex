@@ -1,0 +1,16 @@
+{
+  "name": "request-management-app",
+  "version": "1.0.0",
+  "description": "Приложение для создания и выполнения заявок с ролевой моделью доступа",
+  "private": true,
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "seed:demo": "node scripts/seed-demo.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "cookie-parser": "^1.4.7",
+    "express": "^5.2.1"
+  }
+}

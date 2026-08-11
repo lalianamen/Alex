@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Система заявок</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Экран входа -->
+  <div id="login-screen" class="login-screen hidden">
+    <form id="login-form" class="login-card">
+      <h1>Система заявок</h1>
+      <p class="muted">Вход в систему</p>
+      <label>Логин
+        <input type="text" id="login-input" autocomplete="username" required>
+      </label>
+      <label>Пароль
+        <input type="password" id="password-input" autocomplete="current-password" required>
+      </label>
+      <div id="login-error" class="form-error hidden"></div>
+      <button type="submit" class="btn btn-primary btn-block">Войти</button>
+    </form>
+  </div>
+
+  <!-- Основной интерфейс -->
+  <div id="app" class="hidden">
+    <header class="topbar">
+      <div class="topbar-brand">Система заявок</div>
+      <nav id="nav-tabs" class="topbar-nav"></nav>
+      <div class="topbar-user">
+        <div class="user-info">
+          <span id="user-name"></span>
+          <span id="user-role" class="muted small"></span>
+        </div>
+        <button id="btn-change-password" class="btn btn-ghost" title="Сменить пароль">Пароль</button>
+        <button id="btn-logout" class="btn btn-ghost">Выйти</button>
+      </div>
+    </header>
+    <main id="main" class="main"></main>
+  </div>
+
+  <!-- Модальное окно -->
+  <div id="modal-backdrop" class="modal-backdrop hidden">
+    <div id="modal" class="modal"></div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
