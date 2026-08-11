@@ -7,7 +7,7 @@
 const ROLE_LABEL = {
   admin: 'System Administrator',
   owner: 'Owner',
-  dept_admin: 'Department Administrator',
+  site_admin: 'Site Administrator',
   manager: 'Work Supervisor',
   executor: 'Executor',
 };
@@ -34,6 +34,10 @@ const EVENT_LABEL = {
   cancelled: 'Cancelled',
 };
 
+// Which extra attribute a role is bound to.
+const DEPT_ROLES = ['manager', 'executor'];
+const SITE_ROLES = ['site_admin'];
+
 let currentUser = null;
 let currentTab = null;
 
@@ -51,7 +55,6 @@ function esc(s) {
 
 function fmtDate(s) {
   if (!s) return '—';
-  // Timestamps come from the server in UTC — render them in local time.
   const d = new Date(s);
   if (isNaN(d)) return s;
   return d.toLocaleString('en-US', {
@@ -134,6 +137,14 @@ function priorityCell(p) {
   return `<span class="priority-${esc(p)}">${esc(PRIORITY_LABEL[p] || p)}</span>`;
 }
 
+// options for a <select>, active items only, but always keeping `selectedId`.
+function optionList(items, selectedId) {
+  return items
+    .filter((i) => i.is_active || i.id === selectedId)
+    .map((i) => `<option value="${i.id}" ${i.id === selectedId ? 'selected' : ''}>${esc(i.name)}${i.is_active ? '' : ' (inactive)'}</option>`)
+    .join('');
+}
+
 // ---------------------------------------------------------------------------
 // Sign in / out
 // ---------------------------------------------------------------------------
@@ -212,12 +223,13 @@ const TABS_BY_ROLE = {
   admin: [
     { id: 'users', title: 'Users' },
     { id: 'departments', title: 'Departments' },
+    { id: 'sites', title: 'Sites' },
   ],
   owner: [
     { id: 'requests', title: 'Requests' },
     { id: 'reports', title: 'Reports' },
   ],
-  dept_admin: [{ id: 'requests', title: 'Requests' }],
+  site_admin: [{ id: 'requests', title: 'Requests' }],
   manager: [{ id: 'requests', title: 'Requests' }],
   executor: [{ id: 'requests', title: 'My Work' }],
 };
@@ -247,7 +259,13 @@ function setTab(id) {
     b.classList.toggle('active', b.dataset.tab === id);
   });
   $('#main').onclick = null;
-  const render = { requests: renderRequests, reports: renderReports, users: renderUsers, departments: renderDepartments }[id];
+  const render = {
+    requests: renderRequests,
+    reports: renderReports,
+    users: renderUsers,
+    departments: () => renderNamedList('departments'),
+    sites: () => renderNamedList('sites'),
+  }[id];
   if (render) render();
   else $('#main').innerHTML = '<div class="empty-state">No sections available</div>';
 }
@@ -256,14 +274,28 @@ function setTab(id) {
 // Requests
 // ---------------------------------------------------------------------------
 
+// Which optional columns each role sees in the request list.
+function requestColumns(role) {
+  return {
+    site: role === 'owner' || role === 'manager',
+    department: role !== 'manager',
+    supervisor: role === 'owner' || role === 'site_admin',
+    executor: role === 'owner' || role === 'manager' || role === 'site_admin',
+  };
+}
+
 async function renderRequests() {
   const main = $('#main');
   const role = currentUser.role;
   const isOwner = role === 'owner';
 
   let departments = [];
+  let sites = [];
   if (isOwner) {
-    departments = (await api('/api/departments')).departments;
+    [departments, sites] = await Promise.all([
+      api('/api/departments').then((r) => r.departments),
+      api('/api/sites').then((r) => r.sites),
+    ]);
   }
 
   main.innerHTML = `
@@ -271,6 +303,10 @@ async function renderRequests() {
       <h2>${role === 'executor' ? 'My Work' : 'Requests'}</h2>
       <div class="filters">
         ${isOwner ? `
+          <select id="flt-site">
+            <option value="">All sites</option>
+            ${sites.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}
+          </select>
           <select id="flt-dept">
             <option value="">All departments</option>
             ${departments.map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}
@@ -279,28 +315,31 @@ async function renderRequests() {
           <option value="">All statuses</option>
           ${Object.entries(STATUS_LABEL).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}
         </select>
-        ${role === 'dept_admin' ? '<button id="btn-new-request" class="btn btn-primary">+ New request</button>' : ''}
+        ${role === 'site_admin' ? '<button id="btn-new-request" class="btn btn-primary">+ New request</button>' : ''}
       </div>
     </div>
     <div class="card"><div id="requests-table"></div></div>
   `;
 
   $('#flt-status').addEventListener('change', loadRequests);
-  if (isOwner) $('#flt-dept').addEventListener('change', loadRequests);
-  if (role === 'dept_admin') $('#btn-new-request').addEventListener('click', openNewRequestModal);
+  if (isOwner) {
+    $('#flt-dept').addEventListener('change', loadRequests);
+    $('#flt-site').addEventListener('change', loadRequests);
+  }
+  if (role === 'site_admin') $('#btn-new-request').addEventListener('click', openNewRequestModal);
 
   await loadRequests();
 }
 
 async function loadRequests() {
   const params = new URLSearchParams();
-  const status = $('#flt-status') && $('#flt-status').value;
-  const dept = $('#flt-dept') && $('#flt-dept').value;
-  if (status) params.set('status', status);
-  if (dept) params.set('department_id', dept);
+  const val = (sel) => ($(sel) ? $(sel).value : '');
+  if (val('#flt-status')) params.set('status', val('#flt-status'));
+  if (val('#flt-dept')) params.set('department_id', val('#flt-dept'));
+  if (val('#flt-site')) params.set('site_id', val('#flt-site'));
 
   const { requests } = await api('/api/requests?' + params.toString());
-  const isOwner = currentUser.role === 'owner';
+  const cols = requestColumns(currentUser.role);
 
   const box = $('#requests-table');
   if (!requests.length) {
@@ -308,26 +347,28 @@ async function loadRequests() {
     return;
   }
 
+  const head = ['<th>#</th>', '<th>Subject</th>'];
+  if (cols.site) head.push('<th>Site</th>');
+  if (cols.department) head.push('<th>Department</th>');
+  head.push('<th>Status</th>', '<th>Priority</th>');
+  if (cols.supervisor) head.push('<th>Supervisor</th>');
+  if (cols.executor) head.push('<th>Executor</th>');
+  head.push('<th>Due</th>', '<th>Created</th>');
+
   box.innerHTML = `
     <table>
-      <thead><tr>
-        <th>#</th><th>Subject</th>
-        ${isOwner ? '<th>Department</th>' : ''}
-        <th>Status</th><th>Priority</th><th>Supervisor</th><th>Executor</th><th>Due</th><th>Created</th>
-      </tr></thead>
+      <thead><tr>${head.join('')}</tr></thead>
       <tbody>
-        ${requests.map((r) => `
-          <tr class="clickable" data-id="${r.id}">
-            <td>${r.id}</td>
-            <td>${esc(r.title)}</td>
-            ${isOwner ? `<td>${esc(r.department_name)}</td>` : ''}
-            <td>${statusBadge(r.status)}</td>
-            <td>${priorityCell(r.priority)}</td>
-            <td>${esc(r.manager_name)}</td>
-            <td>${esc(r.executor_name || '—')}</td>
-            <td>${fmtDay(r.due_date)}</td>
-            <td>${fmtDate(r.created_at)}</td>
-          </tr>`).join('')}
+        ${requests.map((r) => {
+          const cells = [`<td>${r.id}</td>`, `<td>${esc(r.title)}</td>`];
+          if (cols.site) cells.push(`<td>${esc(r.site_name || '—')}</td>`);
+          if (cols.department) cells.push(`<td>${esc(r.department_name)}</td>`);
+          cells.push(`<td>${statusBadge(r.status)}</td>`, `<td>${priorityCell(r.priority)}</td>`);
+          if (cols.supervisor) cells.push(`<td>${esc(r.manager_name || '—')}</td>`);
+          if (cols.executor) cells.push(`<td>${esc(r.executor_name || '—')}</td>`);
+          cells.push(`<td>${fmtDay(r.due_date)}</td>`, `<td>${fmtDate(r.created_at)}</td>`);
+          return `<tr class="clickable" data-id="${r.id}">${cells.join('')}</tr>`;
+        }).join('')}
       </tbody>
     </table>
   `;
@@ -337,9 +378,9 @@ async function loadRequests() {
 }
 
 async function openNewRequestModal() {
-  const { managers } = await api('/api/users/managers');
-  if (!managers.length) {
-    toast('There are no active supervisors in your department');
+  const departments = (await api('/api/departments')).departments.filter((d) => d.is_active);
+  if (!departments.length) {
+    toast('No active departments to send a request to');
     return;
   }
   openModal(`
@@ -354,9 +395,9 @@ async function openNewRequestModal() {
           <option value="high">High</option>
         </select>
       </label>
-      <label>Work supervisor
-        <select id="req-manager">
-          ${managers.map((m) => `<option value="${m.id}">${esc(m.full_name)}</option>`).join('')}
+      <label>Department
+        <select id="req-dept">
+          ${departments.map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}
         </select>
       </label>
       <label>Due date <input type="date" id="req-due"></label>
@@ -376,7 +417,7 @@ async function openNewRequestModal() {
           title: $('#req-title').value,
           description: $('#req-desc').value,
           priority: $('#req-priority').value,
-          manager_id: $('#req-manager').value,
+          department_id: $('#req-dept').value,
           due_date: $('#req-due').value || null,
         },
       });
@@ -394,15 +435,15 @@ async function openRequestModal(id) {
   const role = currentUser.role;
 
   const actions = [];
-  if (role === 'manager' && r.manager_id === currentUser.id) {
+  if (role === 'manager') {
     if (r.status === 'new') {
       actions.push('<button class="btn btn-success" data-action="accept">Accept</button>');
       actions.push('<button class="btn btn-danger" data-action="reject">Reject</button>');
     }
-    if (r.status === 'in_progress') {
+    if (r.status === 'in_progress' && r.manager_id === currentUser.id) {
       actions.push('<button class="btn" data-action="assign">Reassign executor</button>');
     }
-    if (r.status === 'done') {
+    if (r.status === 'done' && r.manager_id === currentUser.id) {
       actions.push('<button class="btn btn-success" data-action="close">Confirm &amp; close</button>');
       actions.push('<button class="btn" data-action="reopen">Return for rework</button>');
     }
@@ -410,7 +451,7 @@ async function openRequestModal(id) {
   if (role === 'executor' && r.executor_id === currentUser.id && r.status === 'in_progress') {
     actions.push('<button class="btn btn-success" data-action="done">Mark completed</button>');
   }
-  if (role === 'dept_admin' && r.status === 'new') {
+  if (role === 'site_admin' && r.status === 'new') {
     actions.push('<button class="btn btn-danger" data-action="cancel">Cancel request</button>');
   }
 
@@ -419,9 +460,10 @@ async function openRequestModal(id) {
     <dl class="detail-grid">
       <dt>Status</dt><dd>${statusBadge(r.status)}</dd>
       <dt>Priority</dt><dd>${priorityCell(r.priority)}</dd>
+      <dt>Site</dt><dd>${esc(r.site_name || '—')}</dd>
       <dt>Department</dt><dd>${esc(r.department_name)}</dd>
       <dt>Created by</dt><dd>${esc(r.created_by_name)}</dd>
-      <dt>Supervisor</dt><dd>${esc(r.manager_name)}</dd>
+      <dt>Supervisor</dt><dd>${esc(r.manager_name || 'not accepted yet')}</dd>
       <dt>Executor</dt><dd>${esc(r.executor_name || 'not assigned')}</dd>
       <dt>Due</dt><dd>${fmtDay(r.due_date)}</dd>
       <dt>Created</dt><dd>${fmtDate(r.created_at)}</dd>
@@ -542,13 +584,32 @@ async function renderReports() {
     <div id="report-body"><div class="empty-state">Select a period and click “Generate”</div></div>
   `;
 
+  const breakdownTable = (title, rows, labelKey, labelHead) => `
+    <div class="card">
+      <div class="card-title">${title}</div>
+      ${rows.length ? `
+      <table>
+        <thead><tr>
+          <th>${labelHead}</th><th>Total</th><th>New</th><th>In progress</th>
+          <th>Completed</th><th>Closed</th><th>Rejected</th><th>Cancelled</th>
+        </tr></thead>
+        <tbody>
+          ${rows.map((d) => `
+            <tr>
+              <td>${esc(d[labelKey] || '—')}</td>
+              <td>${d.total}</td><td>${d.new_count}</td><td>${d.in_progress_count}</td>
+              <td>${d.done_count}</td><td>${d.closed_count}</td><td>${d.rejected_count}</td><td>${d.cancelled_count}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>` : '<div class="empty-state">No data for the selected period</div>'}
+    </div>
+  `;
+
   const build = async () => {
-    const from = $('#rep-from').value;
-    const to = $('#rep-to').value;
     const params = new URLSearchParams();
-    if (from) params.set('from', from);
-    if (to) params.set('to', to);
-    const { totals, by_department } = await api('/api/reports/summary?' + params.toString());
+    if ($('#rep-from').value) params.set('from', $('#rep-from').value);
+    if ($('#rep-to').value) params.set('to', $('#rep-to').value);
+    const { totals, by_department, by_site } = await api('/api/reports/summary?' + params.toString());
 
     $('#report-body').innerHTML = `
       <div class="stats-row">
@@ -559,24 +620,8 @@ async function renderReports() {
         <div class="stat-card"><div class="stat-value">${(totals.rejected_count || 0) + (totals.cancelled_count || 0)}</div><div class="stat-label">Rejected / cancelled</div></div>
         <div class="stat-card"><div class="stat-value">${totals.avg_completion_hours != null ? totals.avg_completion_hours + 'h' : '—'}</div><div class="stat-label">Avg. completion time</div></div>
       </div>
-      <div class="card">
-        <div class="card-title">By department</div>
-        ${by_department.length ? `
-        <table>
-          <thead><tr>
-            <th>Department</th><th>Total</th><th>New</th><th>In progress</th>
-            <th>Completed</th><th>Closed</th><th>Rejected</th><th>Cancelled</th>
-          </tr></thead>
-          <tbody>
-            ${by_department.map((d) => `
-              <tr>
-                <td>${esc(d.department_name)}</td>
-                <td>${d.total}</td><td>${d.new_count}</td><td>${d.in_progress_count}</td>
-                <td>${d.done_count}</td><td>${d.closed_count}</td><td>${d.rejected_count}</td><td>${d.cancelled_count}</td>
-              </tr>`).join('')}
-          </tbody>
-        </table>` : '<div class="empty-state">No data for the selected period</div>'}
-      </div>
+      ${breakdownTable('By department', by_department, 'department_name', 'Department')}
+      ${breakdownTable('By site', by_site, 'site_name', 'Site')}
     `;
   };
 
@@ -596,9 +641,10 @@ async function renderReports() {
 // ---------------------------------------------------------------------------
 
 async function renderUsers() {
-  const [{ users }, { departments }] = await Promise.all([
+  const [{ users }, { departments }, { sites }] = await Promise.all([
     api('/api/users'),
     api('/api/departments'),
+    api('/api/sites'),
   ]);
 
   $('#main').innerHTML = `
@@ -610,7 +656,7 @@ async function renderUsers() {
       ${users.length ? `
       <table>
         <thead><tr>
-          <th>Full name</th><th>Username</th><th>Role</th><th>Department</th><th>Status</th><th></th>
+          <th>Full name</th><th>Username</th><th>Role</th><th>Department / Site</th><th>Status</th><th></th>
         </tr></thead>
         <tbody>
           ${users.map((u) => `
@@ -618,7 +664,7 @@ async function renderUsers() {
               <td>${esc(u.full_name)}</td>
               <td>${esc(u.login)}</td>
               <td>${esc(ROLE_LABEL[u.role] || u.role)}</td>
-              <td>${esc(u.department_name || '—')}</td>
+              <td>${esc(u.department_name || u.site_name || '—')}</td>
               <td><span class="badge ${u.is_active ? 'badge-active' : 'badge-inactive'}">
                 ${u.is_active ? 'Active' : 'Disabled'}</span></td>
               <td style="text-align:right; white-space:nowrap">
@@ -634,8 +680,7 @@ async function renderUsers() {
     </div>
   `;
 
-  $('#btn-new-user').addEventListener('click', () => openUserModal(null, departments));
-  // onclick (not addEventListener) so the handler is not stacked on re-render.
+  $('#btn-new-user').addEventListener('click', () => openUserModal(null, departments, sites));
   $('#main').onclick = async (e) => {
     const btn = e.target.closest('button[data-action]');
     if (!btn) return;
@@ -643,7 +688,7 @@ async function renderUsers() {
     const user = users.find((u) => u.id === id);
     switch (btn.dataset.action) {
       case 'edit':
-        openUserModal(user, departments);
+        openUserModal(user, departments, sites);
         break;
       case 'password':
         openResetPasswordModal(user);
@@ -668,7 +713,7 @@ async function renderUsers() {
   };
 }
 
-function openUserModal(user, departments) {
+function openUserModal(user, departments, sites) {
   const isNew = !user;
   openModal(`
     <h3>${isNew ? 'New user' : 'Edit user'}</h3>
@@ -684,11 +729,10 @@ function openUserModal(user, departments) {
         </select>
       </label>
       <label id="u-dept-label">Department
-        <select id="u-dept">
-          <option value="">— none —</option>
-          ${departments.map((d) =>
-            `<option value="${d.id}" ${user && user.department_id === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}
-        </select>
+        <select id="u-dept">${optionList(departments, user ? user.department_id : null)}</select>
+      </label>
+      <label id="u-site-label">Site
+        <select id="u-site">${optionList(sites, user ? user.site_id : null)}</select>
       </label>
       <div id="u-error" class="form-error hidden"></div>
       <div class="modal-actions">
@@ -699,21 +743,22 @@ function openUserModal(user, departments) {
   `);
 
   const roleSelect = $('#u-role');
-  const deptLabel = $('#u-dept-label');
-  const syncDept = () => {
-    const needsDept = ['dept_admin', 'manager', 'executor'].includes(roleSelect.value);
-    deptLabel.style.display = needsDept ? '' : 'none';
+  const syncFields = () => {
+    $('#u-dept-label').style.display = DEPT_ROLES.includes(roleSelect.value) ? '' : 'none';
+    $('#u-site-label').style.display = SITE_ROLES.includes(roleSelect.value) ? '' : 'none';
   };
-  roleSelect.addEventListener('change', syncDept);
-  syncDept();
+  roleSelect.addEventListener('change', syncFields);
+  syncFields();
 
   $('#user-form').addEventListener('submit', async (e) => {
     e.preventDefault();
+    const role = $('#u-role').value;
     const body = {
       full_name: $('#u-name').value,
       login: $('#u-login').value,
-      role: $('#u-role').value,
-      department_id: $('#u-dept').value || null,
+      role,
+      department_id: DEPT_ROLES.includes(role) ? $('#u-dept').value || null : null,
+      site_id: SITE_ROLES.includes(role) ? $('#u-site').value || null : null,
     };
     if (isNew) body.password = $('#u-password').value;
     try {
@@ -758,66 +803,89 @@ function openResetPasswordModal(user) {
 }
 
 // ---------------------------------------------------------------------------
-// Departments (system administrator)
+// Departments and Sites (system administrator) — add, rename, deactivate/restore
 // ---------------------------------------------------------------------------
 
-async function renderDepartments() {
-  const { departments } = await api('/api/departments');
+const NAMED_LIST_META = {
+  departments: { title: 'Departments', singular: 'department', addLabel: '+ Add department' },
+  sites: { title: 'Sites', singular: 'site', addLabel: '+ Add site' },
+};
+
+async function renderNamedList(kind) {
+  const meta = NAMED_LIST_META[kind];
+  const items = (await api(`/api/${kind}`))[kind];
 
   $('#main').innerHTML = `
     <div class="page-header">
-      <h2>Departments</h2>
-      <button id="btn-new-dept" class="btn btn-primary">+ Add department</button>
+      <h2>${meta.title}</h2>
+      <button id="btn-new" class="btn btn-primary">${meta.addLabel}</button>
     </div>
     <div class="card">
-      ${departments.length ? `
+      ${items.length ? `
       <table>
-        <thead><tr><th>Name</th><th style="width:120px"></th></tr></thead>
+        <thead><tr><th>Name</th><th>Status</th><th style="width:220px"></th></tr></thead>
         <tbody>
-          ${departments.map((d) => `
+          ${items.map((it) => `
             <tr>
-              <td>${esc(d.name)}</td>
-              <td style="text-align:right">
-                <button class="btn btn-sm" data-id="${d.id}" data-name="${esc(d.name)}">Rename</button>
+              <td>${esc(it.name)}</td>
+              <td><span class="badge ${it.is_active ? 'badge-active' : 'badge-inactive'}">
+                ${it.is_active ? 'Active' : 'Inactive'}</span></td>
+              <td style="text-align:right; white-space:nowrap">
+                <button class="btn btn-sm" data-action="rename" data-id="${it.id}" data-name="${esc(it.name)}">Rename</button>
+                ${it.is_active
+                  ? `<button class="btn btn-sm btn-danger" data-action="deactivate" data-id="${it.id}">Deactivate</button>`
+                  : `<button class="btn btn-sm btn-success" data-action="restore" data-id="${it.id}">Restore</button>`}
               </td>
             </tr>`).join('')}
         </tbody>
-      </table>` : '<div class="empty-state">No departments yet</div>'}
+      </table>` : `<div class="empty-state">No ${meta.title.toLowerCase()} yet</div>`}
     </div>
   `;
 
-  $('#btn-new-dept').addEventListener('click', () => openDeptModal(null));
-  $('#main').onclick = (e) => {
-    const btn = e.target.closest('button[data-id]');
-    if (btn) openDeptModal({ id: btn.dataset.id, name: btn.dataset.name });
+  $('#btn-new').addEventListener('click', () => openNamedModal(kind, null));
+  $('#main').onclick = async (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const id = Number(btn.dataset.id);
+    const action = btn.dataset.action;
+    if (action === 'rename') {
+      openNamedModal(kind, { id, name: btn.dataset.name });
+    } else {
+      try {
+        await api(`/api/${kind}/${id}/${action}`, { method: 'POST', body: {} });
+        toast('Saved');
+        renderNamedList(kind);
+      } catch (err) { toast(err.message); }
+    }
   };
 }
 
-function openDeptModal(dept) {
-  const isNew = !dept;
+function openNamedModal(kind, item) {
+  const meta = NAMED_LIST_META[kind];
+  const isNew = !item;
   openModal(`
-    <h3>${isNew ? 'New department' : 'Rename department'}</h3>
-    <form id="dept-form">
-      <label>Name <input type="text" id="d-name" required maxlength="100" value="${esc(dept ? dept.name : '')}"></label>
-      <div id="d-error" class="form-error hidden"></div>
+    <h3>${isNew ? `New ${meta.singular}` : `Rename ${meta.singular}`}</h3>
+    <form id="named-form">
+      <label>Name <input type="text" id="n-name" required maxlength="120" value="${esc(item ? item.name : '')}"></label>
+      <div id="n-error" class="form-error hidden"></div>
       <div class="modal-actions">
         <button type="button" class="btn" onclick="closeModal()">Cancel</button>
         <button type="submit" class="btn btn-primary">Save</button>
       </div>
     </form>
   `);
-  $('#dept-form').addEventListener('submit', async (e) => {
+  $('#named-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     try {
-      await api(isNew ? '/api/departments' : `/api/departments/${dept.id}`, {
+      await api(isNew ? `/api/${kind}` : `/api/${kind}/${item.id}`, {
         method: isNew ? 'POST' : 'PUT',
-        body: { name: $('#d-name').value },
+        body: { name: $('#n-name').value },
       });
       closeModal();
       toast('Saved');
-      renderDepartments();
+      renderNamedList(kind);
     } catch (err) {
-      showFormError('#d-error', err.message);
+      showFormError('#n-error', err.message);
     }
   });
 }

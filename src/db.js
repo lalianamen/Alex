@@ -4,13 +4,18 @@ const { Pool } = require('pg');
 const { hashPassword } = require('./passwords');
 
 // Roles:
-//   admin      — system administrator: manages user accounts and permissions
-//   owner      — owner: sees all departments and requests, builds reports
-//   dept_admin — department administrator: creates requests for work supervisors
-//   manager    — work supervisor: accepts requests, assigns executors
-//   executor   — executor: sees and performs only their own work
-const ROLES = ['admin', 'owner', 'dept_admin', 'manager', 'executor'];
-const DEPT_ROLES = ['dept_admin', 'manager', 'executor'];
+//   admin      — system administrator: manages accounts, sites and departments
+//   owner      — owner: sees all sites and requests, builds reports
+//   site_admin — site administrator: works at a site (address), creates requests
+//                addressed to a service department of their choice
+//   manager    — work supervisor: belongs to a department, accepts requests
+//                addressed to it and assigns an executor
+//   executor   — executor: belongs to a department, performs only their own work
+const ROLES = ['admin', 'owner', 'site_admin', 'manager', 'executor'];
+// Roles bound to a service department.
+const DEPT_ROLES = ['manager', 'executor'];
+// Roles bound to a site (address).
+const SITE_ROLES = ['site_admin'];
 
 // Request statuses:
 //   new         — new, awaiting the supervisor's decision
@@ -77,9 +82,17 @@ async function all(text, params) {
 }
 
 const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS sites (
+  id         SERIAL PRIMARY KEY,
+  name       TEXT NOT NULL UNIQUE,
+  is_active  BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS departments (
   id         SERIAL PRIMARY KEY,
   name       TEXT NOT NULL UNIQUE,
+  is_active  BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -88,8 +101,9 @@ CREATE TABLE IF NOT EXISTS users (
   login         TEXT NOT NULL,
   password_hash TEXT NOT NULL,
   full_name     TEXT NOT NULL,
-  role          TEXT NOT NULL CHECK (role IN ('admin','owner','dept_admin','manager','executor')),
+  role          TEXT NOT NULL CHECK (role IN ('admin','owner','site_admin','manager','executor')),
   department_id INTEGER REFERENCES departments(id),
+  site_id       INTEGER REFERENCES sites(id),
   is_active     BOOLEAN NOT NULL DEFAULT TRUE,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -111,9 +125,10 @@ CREATE TABLE IF NOT EXISTS requests (
   priority      TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('low','normal','high')),
   status        TEXT NOT NULL DEFAULT 'new'
                 CHECK (status IN ('new','in_progress','done','closed','rejected','cancelled')),
+  site_id       INTEGER REFERENCES sites(id),
   department_id INTEGER NOT NULL REFERENCES departments(id),
   created_by    INTEGER NOT NULL REFERENCES users(id),
-  manager_id    INTEGER NOT NULL REFERENCES users(id),
+  manager_id    INTEGER REFERENCES users(id),
   executor_id   INTEGER REFERENCES users(id),
   due_date      TEXT,
   reject_reason TEXT,
@@ -141,6 +156,22 @@ CREATE INDEX IF NOT EXISTS idx_events_request      ON request_events(request_id)
 CREATE INDEX IF NOT EXISTS idx_sessions_user       ON sessions(user_id);
 `;
 
+// Idempotent migrations, applied after the base schema so an existing database
+// (created before sites/site-addressing) upgrades in place without data loss.
+const MIGRATE_SQL = `
+ALTER TABLE sites       ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE departments ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE users    ADD COLUMN IF NOT EXISTS site_id INTEGER REFERENCES sites(id);
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS site_id INTEGER REFERENCES sites(id);
+ALTER TABLE requests ALTER COLUMN manager_id DROP NOT NULL;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+UPDATE users SET role = 'site_admin' WHERE role = 'dept_admin';
+ALTER TABLE users ADD CONSTRAINT users_role_check
+  CHECK (role IN ('admin','owner','site_admin','manager','executor'));
+-- Created after the site_id column exists (base schema runs first, then this).
+CREATE INDEX IF NOT EXISTS idx_requests_site ON requests(site_id);
+`;
+
 // The schema is created lazily on first use (on serverless hosting each
 // instance checks it once; subsequent calls are free).
 let readyPromise = null;
@@ -157,6 +188,7 @@ function ready() {
 
 async function initSchema() {
   await query(SCHEMA_SQL);
+  await query(MIGRATE_SQL);
   const row = await one('SELECT COUNT(*)::int AS n FROM users');
   if (row.n === 0) {
     await query(
@@ -167,4 +199,4 @@ async function initSchema() {
   }
 }
 
-module.exports = { pool, query, one, all, ready, ROLES, DEPT_ROLES, STATUSES, PRIORITIES };
+module.exports = { pool, query, one, all, ready, ROLES, DEPT_ROLES, SITE_ROLES, STATUSES, PRIORITIES };

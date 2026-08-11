@@ -4,7 +4,7 @@ const path = require('path');
 const express = require('express');
 const cookieParser = require('cookie-parser');
 
-const { pool, query, one, all, ready, ROLES, DEPT_ROLES, PRIORITIES } = require('./db');
+const { pool, query, one, all, ready, ROLES, DEPT_ROLES, SITE_ROLES, PRIORITIES } = require('./db');
 const { hashPassword, verifyPassword } = require('./passwords');
 const {
   COOKIE_NAME,
@@ -43,6 +43,7 @@ function publicUser(u) {
     full_name: u.full_name,
     role: u.role,
     department_id: u.department_id,
+    site_id: u.site_id,
     is_active: !!u.is_active,
     created_at: u.created_at,
   };
@@ -57,13 +58,15 @@ function toId(v) {
 const REQUEST_SELECT = `
   SELECT r.*,
          d.name  AS department_name,
+         st.name AS site_name,
          cu.full_name AS created_by_name,
          mu.full_name AS manager_name,
          eu.full_name AS executor_name
   FROM requests r
   JOIN departments d ON d.id = r.department_id
+  LEFT JOIN sites st ON st.id = r.site_id
   JOIN users cu ON cu.id = r.created_by
-  JOIN users mu ON mu.id = r.manager_id
+  LEFT JOIN users mu ON mu.id = r.manager_id
   LEFT JOIN users eu ON eu.id = r.executor_id
 `;
 
@@ -73,11 +76,16 @@ async function getRequest(id) {
 }
 
 // Who can see a request (card and list view).
+//   owner      — everything
+//   site_admin — requests originating from their site
+//   manager    — requests addressed to their department
+//   executor   — requests assigned to them
 function canSeeRequest(user, r) {
   switch (user.role) {
     case 'owner':
       return true;
-    case 'dept_admin':
+    case 'site_admin':
+      return r.site_id === user.site_id;
     case 'manager':
       return r.department_id === user.department_id;
     case 'executor':
@@ -147,45 +155,61 @@ app.post('/api/me/password', requireRole(), async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Departments
+// Simple named lists — departments (service departments) and sites (addresses)
 // ---------------------------------------------------------------------------
 
-app.get('/api/departments', requireRole(), async (req, res) => {
-  res.json({ departments: await all('SELECT * FROM departments ORDER BY name') });
-});
+function namedListRoutes(pathName, table) {
+  // Any signed-in user can read the lists (used to fill dropdowns). The client
+  // shows only active entries in pickers; the admin screen shows all.
+  app.get(`/api/${pathName}`, requireRole(), async (req, res) => {
+    res.json({
+      [pathName]: await all(`SELECT * FROM ${table} ORDER BY is_active DESC, name`),
+    });
+  });
 
-app.post('/api/departments', requireRole('admin'), async (req, res) => {
-  const name = String((req.body || {}).name || '').trim();
-  if (!name) return res.status(400).json({ error: 'Enter a department name' });
-  try {
-    const department = await one('INSERT INTO departments (name) VALUES ($1) RETURNING *', [name]);
-    res.json({ department });
-  } catch (e) {
-    if (e.code === '23505') {
-      return res.status(400).json({ error: 'A department with this name already exists' });
+  app.post(`/api/${pathName}`, requireRole('admin'), async (req, res) => {
+    const name = String((req.body || {}).name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Enter a name' });
+    try {
+      const row = await one(`INSERT INTO ${table} (name) VALUES ($1) RETURNING *`, [name]);
+      res.json({ item: row });
+    } catch (e) {
+      if (e.code === '23505') return res.status(400).json({ error: 'This name already exists' });
+      throw e;
     }
-    throw e;
-  }
-});
+  });
 
-app.put('/api/departments/:id', requireRole('admin'), async (req, res) => {
-  const name = String((req.body || {}).name || '').trim();
-  if (!name) return res.status(400).json({ error: 'Enter a department name' });
-  const dept = await one('SELECT * FROM departments WHERE id = $1', [toId(req.params.id)]);
-  if (!dept) return res.status(404).json({ error: 'Department not found' });
-  try {
-    const department = await one('UPDATE departments SET name = $1 WHERE id = $2 RETURNING *', [
-      name,
-      dept.id,
+  app.put(`/api/${pathName}/:id`, requireRole('admin'), async (req, res) => {
+    const name = String((req.body || {}).name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Enter a name' });
+    const existing = await one(`SELECT * FROM ${table} WHERE id = $1`, [toId(req.params.id)]);
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+    try {
+      const row = await one(`UPDATE ${table} SET name = $1 WHERE id = $2 RETURNING *`, [name, existing.id]);
+      res.json({ item: row });
+    } catch (e) {
+      if (e.code === '23505') return res.status(400).json({ error: 'This name already exists' });
+      throw e;
+    }
+  });
+
+  // Entries are never deleted (existing requests/users still reference them);
+  // they are deactivated instead, which just hides them from new pickers.
+  const setActive = (active) => async (req, res) => {
+    const existing = await one(`SELECT * FROM ${table} WHERE id = $1`, [toId(req.params.id)]);
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+    const row = await one(`UPDATE ${table} SET is_active = $1 WHERE id = $2 RETURNING *`, [
+      active,
+      existing.id,
     ]);
-    res.json({ department });
-  } catch (e) {
-    if (e.code === '23505') {
-      return res.status(400).json({ error: 'A department with this name already exists' });
-    }
-    throw e;
-  }
-});
+    res.json({ item: row });
+  };
+  app.post(`/api/${pathName}/:id/deactivate`, requireRole('admin'), setActive(false));
+  app.post(`/api/${pathName}/:id/restore`, requireRole('admin'), setActive(true));
+}
+
+namedListRoutes('departments', 'departments');
+namedListRoutes('sites', 'sites');
 
 // ---------------------------------------------------------------------------
 // Users (system administrator)
@@ -197,6 +221,7 @@ async function validateUserPayload(body, { requirePassword }) {
   const role = String(body.role || '');
   const password = body.password == null ? '' : String(body.password);
   const department_id = body.department_id ? toId(body.department_id) : null;
+  const site_id = body.site_id ? toId(body.site_id) : null;
 
   if (!login) return { error: 'Enter a username' };
   if (!/^[a-zA-Z0-9._-]{3,32}$/.test(login)) {
@@ -207,30 +232,36 @@ async function validateUserPayload(body, { requirePassword }) {
   if (requirePassword && password.length < 6) {
     return { error: 'Password must be at least 6 characters' };
   }
+
+  let dept = null;
+  let site = null;
   if (DEPT_ROLES.includes(role)) {
     if (!department_id) return { error: 'This role requires a department' };
-    const dept = await one('SELECT id FROM departments WHERE id = $1', [department_id]);
-    if (!dept) return { error: 'Department not found' };
+    if (!(await one('SELECT id FROM departments WHERE id = $1', [department_id]))) {
+      return { error: 'Department not found' };
+    }
+    dept = department_id;
+  } else if (SITE_ROLES.includes(role)) {
+    if (!site_id) return { error: 'This role requires a site' };
+    if (!(await one('SELECT id FROM sites WHERE id = $1', [site_id]))) {
+      return { error: 'Site not found' };
+    }
+    site = site_id;
   }
-  return {
-    value: {
-      login,
-      full_name,
-      role,
-      password,
-      department_id: DEPT_ROLES.includes(role) ? department_id : null,
-    },
-  };
+
+  return { value: { login, full_name, role, password, department_id: dept, site_id: site } };
 }
 
 app.get('/api/users', requireRole('admin'), async (req, res) => {
   const users = (
     await all(
-      `SELECT u.*, d.name AS department_name
-       FROM users u LEFT JOIN departments d ON d.id = u.department_id
+      `SELECT u.*, d.name AS department_name, st.name AS site_name
+       FROM users u
+       LEFT JOIN departments d ON d.id = u.department_id
+       LEFT JOIN sites st ON st.id = u.site_id
        ORDER BY u.is_active DESC, u.full_name`
     )
-  ).map((u) => ({ ...publicUser(u), department_name: u.department_name }));
+  ).map((u) => ({ ...publicUser(u), department_name: u.department_name, site_name: u.site_name }));
   res.json({ users });
 });
 
@@ -241,9 +272,9 @@ app.post('/api/users', requireRole('admin'), async (req, res) => {
   const exists = await one('SELECT id FROM users WHERE LOWER(login) = LOWER($1)', [v.login]);
   if (exists) return res.status(400).json({ error: 'A user with this username already exists' });
   const user = await one(
-    `INSERT INTO users (login, password_hash, full_name, role, department_id)
-     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-    [v.login, hashPassword(v.password), v.full_name, v.role, v.department_id]
+    `INSERT INTO users (login, password_hash, full_name, role, department_id, site_id)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    [v.login, hashPassword(v.password), v.full_name, v.role, v.department_id, v.site_id]
   );
   res.json({ user: publicUser(user) });
 });
@@ -260,9 +291,9 @@ app.put('/api/users/:id', requireRole('admin'), async (req, res) => {
   ]);
   if (exists) return res.status(400).json({ error: 'A user with this username already exists' });
   const updated = await one(
-    `UPDATE users SET login = $1, full_name = $2, role = $3, department_id = $4, updated_at = now()
-     WHERE id = $5 RETURNING *`,
-    [v.login, v.full_name, v.role, v.department_id, user.id]
+    `UPDATE users SET login = $1, full_name = $2, role = $3, department_id = $4, site_id = $5,
+       updated_at = now() WHERE id = $6 RETURNING *`,
+    [v.login, v.full_name, v.role, v.department_id, v.site_id, user.id]
   );
   res.json({ user: publicUser(updated) });
 });
@@ -301,18 +332,7 @@ app.post('/api/users/:id/restore', requireRole('admin'), async (req, res) => {
   res.json({ ok: true });
 });
 
-// Reference lists for forms: supervisors of the current department (for the
-// department admin) and executors of the current department (for the supervisor).
-app.get('/api/users/managers', requireRole('dept_admin'), async (req, res) => {
-  const managers = await all(
-    `SELECT id, full_name FROM users
-     WHERE role = 'manager' AND department_id = $1 AND is_active
-     ORDER BY full_name`,
-    [req.user.department_id]
-  );
-  res.json({ managers });
-});
-
+// Executors of the current supervisor's department (for the assign form).
 app.get('/api/users/executors', requireRole('manager'), async (req, res) => {
   const executors = await all(
     `SELECT id, full_name FROM users
@@ -329,40 +349,32 @@ app.get('/api/users/executors', requireRole('manager'), async (req, res) => {
 
 app.get(
   '/api/requests',
-  requireRole('owner', 'dept_admin', 'manager', 'executor'),
+  requireRole('owner', 'site_admin', 'manager', 'executor'),
   async (req, res) => {
     const where = [];
     const params = [];
+    const add = (clause, value) => {
+      params.push(value);
+      where.push(clause.replace('$?', `$${params.length}`));
+    };
 
     switch (req.user.role) {
-      case 'owner': {
-        const did = toId(req.query.department_id);
-        if (did) {
-          params.push(did);
-          where.push(`r.department_id = $${params.length}`);
-        }
+      case 'owner':
+        if (toId(req.query.department_id)) add('r.department_id = $?', toId(req.query.department_id));
+        if (toId(req.query.site_id)) add('r.site_id = $?', toId(req.query.site_id));
         break;
-      }
-      case 'dept_admin':
-        params.push(req.user.department_id);
-        where.push(`r.department_id = $${params.length}`);
+      case 'site_admin':
+        add('r.site_id = $?', req.user.site_id);
         break;
       case 'manager':
-        params.push(req.user.department_id);
-        where.push(`r.department_id = $${params.length}`);
-        params.push(req.user.id);
-        where.push(`r.manager_id = $${params.length}`);
+        add('r.department_id = $?', req.user.department_id);
         break;
       case 'executor':
-        params.push(req.user.id);
-        where.push(`r.executor_id = $${params.length}`);
+        add('r.executor_id = $?', req.user.id);
         break;
     }
 
-    if (req.query.status) {
-      params.push(String(req.query.status));
-      where.push(`r.status = $${params.length}`);
-    }
+    if (req.query.status) add('r.status = $?', String(req.query.status));
 
     const sql = `${REQUEST_SELECT} ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
                  ORDER BY r.created_at DESC, r.id DESC`;
@@ -372,7 +384,7 @@ app.get(
 
 app.get(
   '/api/requests/:id',
-  requireRole('owner', 'dept_admin', 'manager', 'executor'),
+  requireRole('owner', 'site_admin', 'manager', 'executor'),
   async (req, res) => {
     const r = await getRequest(toId(req.params.id));
     if (!r || !canSeeRequest(req.user, r)) {
@@ -388,45 +400,48 @@ app.get(
   }
 );
 
-// Create a request — department administrator; addressed to a work supervisor
-// of their own department.
-app.post('/api/requests', requireRole('dept_admin'), async (req, res) => {
+// Create a request — site administrator; addressed to a service department.
+app.post('/api/requests', requireRole('site_admin'), async (req, res) => {
   const b = req.body || {};
   const title = String(b.title || '').trim();
   const description = String(b.description || '').trim();
   const priority = PRIORITIES.includes(b.priority) ? b.priority : 'normal';
-  const manager_id = toId(b.manager_id);
+  const department_id = toId(b.department_id);
   const due_date = b.due_date ? String(b.due_date) : null;
 
   if (!title) return res.status(400).json({ error: 'Enter a request subject' });
-  if (!manager_id) return res.status(400).json({ error: 'Select a supervisor' });
+  if (!department_id) return res.status(400).json({ error: 'Select a department' });
   if (due_date && !/^\d{4}-\d{2}-\d{2}$/.test(due_date)) {
     return res.status(400).json({ error: 'Invalid due date' });
   }
-
-  const manager = await one(
-    `SELECT * FROM users WHERE id = $1 AND role = 'manager' AND is_active`,
-    [manager_id]
-  );
-  if (!manager || manager.department_id !== req.user.department_id) {
-    return res.status(400).json({ error: 'The supervisor must belong to your department' });
+  if (!(await one('SELECT id FROM departments WHERE id = $1 AND is_active', [department_id]))) {
+    return res.status(400).json({ error: 'Select an active department' });
   }
 
   const row = await one(
-    `INSERT INTO requests (title, description, priority, department_id, created_by, manager_id, due_date)
-     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-    [title, description, priority, req.user.department_id, req.user.id, manager_id, due_date]
+    `INSERT INTO requests (title, description, priority, site_id, department_id, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [title, description, priority, req.user.site_id, department_id, req.user.id]
   );
+  if (due_date) await query('UPDATE requests SET due_date = $1 WHERE id = $2', [due_date, row.id]);
   await addEvent(row.id, req.user.id, 'created', null);
   res.json({ request: await getRequest(row.id) });
 });
 
-// Accept and assign an executor — work supervisor.
-app.post('/api/requests/:id/accept', requireRole('manager'), async (req, res) => {
+// A supervisor may act on a request only if it is addressed to their department.
+async function managerRequest(req, res) {
   const r = await getRequest(toId(req.params.id));
-  if (!r || r.manager_id !== req.user.id) {
-    return res.status(404).json({ error: 'Request not found' });
+  if (!r || r.department_id !== req.user.department_id) {
+    res.status(404).json({ error: 'Request not found' });
+    return null;
   }
+  return r;
+}
+
+// Accept and assign an executor — any supervisor of the target department.
+app.post('/api/requests/:id/accept', requireRole('manager'), async (req, res) => {
+  const r = await managerRequest(req, res);
+  if (!r) return;
   if (r.status !== 'new') return res.status(400).json({ error: 'Request has already been processed' });
 
   const executor_id = toId((req.body || {}).executor_id);
@@ -440,20 +455,45 @@ app.post('/api/requests/:id/accept', requireRole('manager'), async (req, res) =>
   }
 
   await query(
-    `UPDATE requests SET status = 'in_progress', executor_id = $1,
-       accepted_at = now(), updated_at = now() WHERE id = $2`,
-    [executor_id, r.id]
+    `UPDATE requests SET status = 'in_progress', manager_id = $1, executor_id = $2,
+       accepted_at = now(), updated_at = now() WHERE id = $3`,
+    [req.user.id, executor_id, r.id]
   );
   await addEvent(r.id, req.user.id, 'accepted', `Executor: ${executor.full_name}`);
   res.json({ request: await getRequest(r.id) });
 });
 
-// Reassign the executor on a request in progress — work supervisor.
-app.post('/api/requests/:id/assign', requireRole('manager'), async (req, res) => {
+// Reject a request — any supervisor of the target department (with a reason).
+app.post('/api/requests/:id/reject', requireRole('manager'), async (req, res) => {
+  const r = await managerRequest(req, res);
+  if (!r) return;
+  if (r.status !== 'new') return res.status(400).json({ error: 'Only a new request can be rejected' });
+  const reason = String((req.body || {}).reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'Enter a rejection reason' });
+
+  await query(
+    `UPDATE requests SET status = 'rejected', manager_id = $1, reject_reason = $2,
+       updated_at = now() WHERE id = $3`,
+    [req.user.id, reason, r.id]
+  );
+  await addEvent(r.id, req.user.id, 'rejected', reason);
+  res.json({ request: await getRequest(r.id) });
+});
+
+// The supervisor who accepted a request owns its later transitions.
+async function owningManagerRequest(req, res) {
   const r = await getRequest(toId(req.params.id));
   if (!r || r.manager_id !== req.user.id) {
-    return res.status(404).json({ error: 'Request not found' });
+    res.status(404).json({ error: 'Request not found' });
+    return null;
   }
+  return r;
+}
+
+// Reassign the executor on a request in progress.
+app.post('/api/requests/:id/assign', requireRole('manager'), async (req, res) => {
+  const r = await owningManagerRequest(req, res);
+  if (!r) return;
   if (r.status !== 'in_progress') {
     return res.status(400).json({ error: 'You can reassign only a request that is in progress' });
   }
@@ -476,26 +516,6 @@ app.post('/api/requests/:id/assign', requireRole('manager'), async (req, res) =>
   res.json({ request: await getRequest(r.id) });
 });
 
-// Reject a request — work supervisor (with a reason).
-app.post('/api/requests/:id/reject', requireRole('manager'), async (req, res) => {
-  const r = await getRequest(toId(req.params.id));
-  if (!r || r.manager_id !== req.user.id) {
-    return res.status(404).json({ error: 'Request not found' });
-  }
-  if (r.status !== 'new') {
-    return res.status(400).json({ error: 'Only a new request can be rejected' });
-  }
-  const reason = String((req.body || {}).reason || '').trim();
-  if (!reason) return res.status(400).json({ error: 'Enter a rejection reason' });
-
-  await query(
-    `UPDATE requests SET status = 'rejected', reject_reason = $1, updated_at = now() WHERE id = $2`,
-    [reason, r.id]
-  );
-  await addEvent(r.id, req.user.id, 'rejected', reason);
-  res.json({ request: await getRequest(r.id) });
-});
-
 // Mark as completed — executor.
 app.post('/api/requests/:id/done', requireRole('executor'), async (req, res) => {
   const r = await getRequest(toId(req.params.id));
@@ -515,12 +535,10 @@ app.post('/api/requests/:id/done', requireRole('executor'), async (req, res) => 
   res.json({ request: await getRequest(r.id) });
 });
 
-// Confirm completion and close — work supervisor.
+// Confirm completion and close — the supervisor who accepted it.
 app.post('/api/requests/:id/close', requireRole('manager'), async (req, res) => {
-  const r = await getRequest(toId(req.params.id));
-  if (!r || r.manager_id !== req.user.id) {
-    return res.status(404).json({ error: 'Request not found' });
-  }
+  const r = await owningManagerRequest(req, res);
+  if (!r) return;
   if (r.status !== 'done') {
     return res.status(400).json({ error: 'Only a completed request can be closed' });
   }
@@ -533,12 +551,10 @@ app.post('/api/requests/:id/close', requireRole('manager'), async (req, res) => 
   res.json({ request: await getRequest(r.id) });
 });
 
-// Return a completed request for rework — work supervisor.
+// Return a completed request for rework — the supervisor who accepted it.
 app.post('/api/requests/:id/reopen', requireRole('manager'), async (req, res) => {
-  const r = await getRequest(toId(req.params.id));
-  if (!r || r.manager_id !== req.user.id) {
-    return res.status(404).json({ error: 'Request not found' });
-  }
+  const r = await owningManagerRequest(req, res);
+  if (!r) return;
   if (r.status !== 'done') {
     return res.status(400).json({ error: 'Only a completed request can be returned for rework' });
   }
@@ -553,10 +569,10 @@ app.post('/api/requests/:id/reopen', requireRole('manager'), async (req, res) =>
   res.json({ request: await getRequest(r.id) });
 });
 
-// Cancel a new request — department administrator (own department).
-app.post('/api/requests/:id/cancel', requireRole('dept_admin'), async (req, res) => {
+// Cancel a new request — site administrator (own site).
+app.post('/api/requests/:id/cancel', requireRole('site_admin'), async (req, res) => {
   const r = await getRequest(toId(req.params.id));
-  if (!r || r.department_id !== req.user.department_id) {
+  if (!r || r.site_id !== req.user.site_id) {
     return res.status(404).json({ error: 'Request not found' });
   }
   if (r.status !== 'new') {
@@ -608,6 +624,15 @@ app.get('/api/reports/summary', requireRole('owner'), async (req, res) => {
     params
   );
 
+  const bySite = await all(
+    `SELECT st.id AS site_id, st.name AS site_name,
+            COUNT(*)::int AS total, ${STATUS_COUNTS}
+     FROM requests r LEFT JOIN sites st ON st.id = r.site_id
+     ${cond}
+     GROUP BY st.id, st.name ORDER BY st.name NULLS LAST`,
+    params
+  );
+
   const totals = await one(
     `SELECT COUNT(*)::int AS total, ${STATUS_COUNTS},
             ROUND((AVG(EXTRACT(EPOCH FROM (r.done_at - r.created_at)) / 3600.0)
@@ -617,7 +642,7 @@ app.get('/api/reports/summary', requireRole('owner'), async (req, res) => {
     params
   );
 
-  res.json({ by_department: byDepartment, totals });
+  res.json({ by_department: byDepartment, by_site: bySite, totals });
 });
 
 const STATUS_LABEL = {
@@ -641,7 +666,7 @@ app.get('/api/reports/export.csv', requireRole('owner'), async (req, res) => {
   };
   const fmtTs = (v) => (v instanceof Date ? v.toISOString().replace('T', ' ').slice(0, 16) : v);
   const header = [
-    '#', 'Subject', 'Department', 'Status', 'Priority', 'Created by',
+    '#', 'Subject', 'Site', 'Department', 'Status', 'Priority', 'Created by',
     'Supervisor', 'Executor', 'Created (UTC)', 'Accepted (UTC)',
     'Completed (UTC)', 'Closed (UTC)', 'Due',
   ];
@@ -649,7 +674,7 @@ app.get('/api/reports/export.csv', requireRole('owner'), async (req, res) => {
   for (const r of rows) {
     lines.push(
       [
-        r.id, r.title, r.department_name, STATUS_LABEL[r.status] || r.status,
+        r.id, r.title, r.site_name, r.department_name, STATUS_LABEL[r.status] || r.status,
         PRIORITY_LABEL[r.priority] || r.priority, r.created_by_name, r.manager_name,
         r.executor_name, fmtTs(r.created_at), fmtTs(r.accepted_at),
         fmtTs(r.done_at), fmtTs(r.closed_at), r.due_date,
