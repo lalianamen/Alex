@@ -189,6 +189,9 @@ textarea { resize: vertical; min-height: 80px; }
 
 .filters input, .filters select { width: auto; margin-top: 0; display: inline-block; }
 
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+@media (max-width: 520px) { .two-col { grid-template-columns: 1fr; } }
+
 .perm-group {
   border: 1px solid var(--border);
   border-radius: 8px;

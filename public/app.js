@@ -618,13 +618,14 @@ async function renderEmployees() {
     </div>
     <div class="card">
       ${users.length ? `<table>
-        <thead><tr><th>Full name</th><th>Username</th><th>Role</th><th>Position — Division (Company)</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Full name</th><th>Username</th><th>Role</th><th>Position — Division (Company)</th><th>Supervisor</th><th>Status</th><th></th></tr></thead>
         <tbody>${users.map((u) => `
           <tr>
             <td>${esc(u.full_name)}</td>
             <td>${esc(u.login)}</td>
             <td>${esc(ROLE_LABEL[u.role] || u.role)}</td>
             <td>${esc(userAttachment(u))}</td>
+            <td>${esc(u.supervisor_name || '—')}</td>
             <td><span class="badge ${u.is_active ? 'badge-active' : 'badge-inactive'}">${u.is_active ? 'Active' : 'Disabled'}</span></td>
             <td style="text-align:right; white-space:nowrap">
               <button class="btn btn-sm" data-action="edit" data-id="${u.id}">Edit</button>
@@ -639,14 +640,14 @@ async function renderEmployees() {
     </div>
   `;
 
-  $('#btn-new-user').addEventListener('click', () => openUserModal(null, positions));
+  $('#btn-new-user').addEventListener('click', () => openUserModal(null, positions, users));
   $('#main').onclick = async (e) => {
     const btn = e.target.closest('button[data-action]');
     if (!btn) return;
     const id = Number(btn.dataset.id);
     const user = users.find((u) => u.id === id);
     const act = btn.dataset.action;
-    if (act === 'edit') return openUserModal(user, positions);
+    if (act === 'edit') return openUserModal(user, positions, users);
     if (act === 'password') return openResetPasswordModal(user);
     const confirmMsg = {
       deactivate: `Disable account “${user.full_name}”?`,
@@ -662,16 +663,37 @@ async function renderEmployees() {
   };
 }
 
-function openUserModal(user, positions) {
+function openUserModal(user, positions, allUsers) {
   const isNew = !user;
+  // Prefill first/last name from stored fields, or split legacy full_name.
+  let first = user ? user.first_name || '' : '';
+  let last = user ? user.last_name || '' : '';
+  if (user && !first && !last && user.full_name) {
+    const parts = user.full_name.split(' ');
+    first = parts.shift() || '';
+    last = parts.join(' ');
+  }
+  const supervisors = (allUsers || []).filter((x) => !user || x.id !== user.id);
   openModal(`
     <h3>${isNew ? 'New employee' : 'Edit employee'}</h3>
     <form id="user-form">
-      <label>Full name <input type="text" id="u-name" required value="${esc(user ? user.full_name : '')}"></label>
+      <div class="two-col">
+        <label>First name <input type="text" id="u-first" required value="${esc(first)}"></label>
+        <label>Last name <input type="text" id="u-last" required value="${esc(last)}"></label>
+      </div>
       <label>Username <input type="text" id="u-login" required value="${esc(user ? user.login : '')}"
         pattern="[a-zA-Z0-9._\\-]{3,32}" title="3–32 characters: letters, digits, dot, hyphen, underscore"></label>
+      <div class="two-col">
+        <label>Phone <input type="text" id="u-phone" maxlength="40" value="${esc(user ? user.phone || '' : '')}"></label>
+        <label>Address <input type="text" id="u-address" maxlength="200" value="${esc(user ? user.address || '' : '')}"></label>
+      </div>
       ${isNew ? `<label>Password ${pwField('u-password', 'minlength="6" autocomplete="new-password"')}
         <div class="muted small" style="margin-top:5px">Leave blank — the user sets it at first sign-in.</div></label>` : ''}
+      <label>Supervisor
+        <select id="u-sup"><option value="">— none —</option>
+          ${supervisors.map((s) => `<option value="${s.id}" ${user && user.supervisor_id === s.id ? 'selected' : ''}>${esc(s.full_name)}</option>`).join('')}
+        </select>
+      </label>
       <label>Role
         <select id="u-role">${Object.entries(ROLE_LABEL).map(([k, v]) => `<option value="${k}" ${user && user.role === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>
       </label>
@@ -703,8 +725,12 @@ function openUserModal(user, positions) {
     e.preventDefault();
     const role = $('#u-role').value;
     const body = {
-      full_name: $('#u-name').value,
+      first_name: $('#u-first').value,
+      last_name: $('#u-last').value,
       login: $('#u-login').value,
+      phone: $('#u-phone').value,
+      address: $('#u-address').value,
+      supervisor_id: $('#u-sup').value || null,
       role,
       position_id: role === 'employee' ? $('#u-pos').value || null : null,
     };

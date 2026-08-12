@@ -41,6 +41,11 @@ function publicUser(u) {
     id: u.id,
     login: u.login,
     full_name: u.full_name,
+    first_name: u.first_name || null,
+    last_name: u.last_name || null,
+    phone: u.phone || null,
+    address: u.address || null,
+    supervisor_id: u.supervisor_id || null,
     role: u.role,
     site_id: u.site_id,
     position_id: u.position_id,
@@ -392,21 +397,39 @@ app.post('/api/positions/:id/restore', requireRole('admin'), setPositionActive(t
 // Employees (users) — system administrator
 // ---------------------------------------------------------------------------
 
-async function validateUserPayload(body) {
+async function validateUserPayload(body, selfId) {
   const login = String(body.login || '').trim();
-  const full_name = String(body.full_name || '').trim();
+  let first_name = String(body.first_name || '').trim();
+  let last_name = String(body.last_name || '').trim();
+  // Fall back to splitting a supplied full_name when first/last aren't given.
+  if (!first_name && !last_name && body.full_name) {
+    const parts = String(body.full_name).trim().split(/\s+/);
+    first_name = parts.shift() || '';
+    last_name = parts.join(' ');
+  }
+  const full_name = [first_name, last_name].filter(Boolean).join(' ');
   const role = String(body.role || '');
   const password = body.password == null ? '' : String(body.password);
+  const phone = String(body.phone || '').trim() || null;
+  const address = String(body.address || '').trim() || null;
   const position_id = body.position_id ? toId(body.position_id) : null;
+  const supervisor_id = body.supervisor_id ? toId(body.supervisor_id) : null;
 
   if (!login) return { error: 'Enter a username' };
   if (!/^[a-zA-Z0-9._-]{3,32}$/.test(login)) {
     return { error: 'Username: 3–32 characters, letters, digits, dot, hyphen, underscore' };
   }
-  if (!full_name) return { error: 'Enter a full name' };
+  if (!full_name) return { error: 'Enter a first and last name' };
   if (!ROLES.includes(role)) return { error: 'Invalid role' };
   if (password && password.length < 6) {
     return { error: 'Password must be at least 6 characters' };
+  }
+
+  if (supervisor_id) {
+    if (supervisor_id === selfId) return { error: 'A person cannot be their own supervisor' };
+    if (!(await one('SELECT id FROM users WHERE id = $1', [supervisor_id]))) {
+      return { error: 'Supervisor not found' };
+    }
   }
 
   // Employees are attached to a position; the division is derived from it.
@@ -419,17 +442,24 @@ async function validateUserPayload(body) {
     position = pos.id;
     site = pos.site_id;
   }
-  return { value: { login, full_name, role, password, site_id: site, position_id: position } };
+  return {
+    value: {
+      login, full_name, first_name, last_name, phone, address, role, password,
+      site_id: site, position_id: position, supervisor_id,
+    },
+  };
 }
 
 app.get('/api/users', requireRole('admin'), async (req, res) => {
   const users = (
     await all(
-      `SELECT u.*, p.title AS position_title, s.name AS site_name, c.name AS company_name
+      `SELECT u.*, p.title AS position_title, s.name AS site_name, c.name AS company_name,
+              sup.full_name AS supervisor_name
        FROM users u
        LEFT JOIN positions p ON p.id = u.position_id
        LEFT JOIN sites s ON s.id = u.site_id
        LEFT JOIN companies c ON c.id = s.company_id
+       LEFT JOIN users sup ON sup.id = u.supervisor_id
        ORDER BY u.is_active DESC, u.full_name`
     )
   ).map((u) => ({
@@ -437,6 +467,7 @@ app.get('/api/users', requireRole('admin'), async (req, res) => {
     position_title: u.position_title || null,
     site_name: u.site_name || null,
     company_name: u.company_name || null,
+    supervisor_name: u.supervisor_name || null,
   }));
   res.json({ users });
 });
@@ -450,9 +481,11 @@ app.post('/api/users', requireRole('admin'), async (req, res) => {
   }
   const hasPassword = v.password.length >= 6;
   const user = await one(
-    `INSERT INTO users (login, password_hash, full_name, role, site_id, position_id, must_set_password)
-     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-    [v.login, hasPassword ? hashPassword(v.password) : '', v.full_name, v.role, v.site_id, v.position_id, !hasPassword]
+    `INSERT INTO users (login, password_hash, full_name, first_name, last_name, phone, address,
+       role, site_id, position_id, supervisor_id, must_set_password)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+    [v.login, hasPassword ? hashPassword(v.password) : '', v.full_name, v.first_name, v.last_name,
+      v.phone, v.address, v.role, v.site_id, v.position_id, v.supervisor_id, !hasPassword]
   );
   res.json({ user: publicUser(user) });
 });
@@ -460,16 +493,18 @@ app.post('/api/users', requireRole('admin'), async (req, res) => {
 app.put('/api/users/:id', requireRole('admin'), async (req, res) => {
   const user = await one('SELECT * FROM users WHERE id = $1', [toId(req.params.id)]);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  const check = await validateUserPayload(req.body || {});
+  const check = await validateUserPayload(req.body || {}, user.id);
   if (check.error) return res.status(400).json({ error: check.error });
   const v = check.value;
   if (await one('SELECT id FROM users WHERE LOWER(login) = LOWER($1) AND id != $2', [v.login, user.id])) {
     return res.status(400).json({ error: 'A user with this username already exists' });
   }
   const updated = await one(
-    `UPDATE users SET login = $1, full_name = $2, role = $3, site_id = $4, position_id = $5,
-       updated_at = now() WHERE id = $6 RETURNING *`,
-    [v.login, v.full_name, v.role, v.site_id, v.position_id, user.id]
+    `UPDATE users SET login = $1, full_name = $2, first_name = $3, last_name = $4, phone = $5,
+       address = $6, role = $7, site_id = $8, position_id = $9, supervisor_id = $10,
+       updated_at = now() WHERE id = $11 RETURNING *`,
+    [v.login, v.full_name, v.first_name, v.last_name, v.phone, v.address, v.role, v.site_id,
+      v.position_id, v.supervisor_id, user.id]
   );
   res.json({ user: publicUser(updated) });
 });

@@ -123,6 +123,11 @@ CREATE TABLE IF NOT EXISTS users (
   login         TEXT NOT NULL,
   password_hash TEXT NOT NULL,
   full_name     TEXT NOT NULL,
+  first_name    TEXT,
+  last_name     TEXT,
+  phone         TEXT,
+  address       TEXT,
+  supervisor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   role          TEXT NOT NULL CHECK (role IN ('admin','owner','employee')),
   department_id INTEGER REFERENCES departments(id),
   site_id       INTEGER REFERENCES sites(id),
@@ -208,6 +213,11 @@ ALTER TABLE users ADD CONSTRAINT users_role_check
 -- Positions, companies/divisions, request attribution and routing.
 ALTER TABLE users    ADD COLUMN IF NOT EXISTS is_super BOOLEAN NOT NULL DEFAULT FALSE;
 UPDATE users SET is_super = TRUE WHERE LOWER(login) = 'admin';
+ALTER TABLE users    ADD COLUMN IF NOT EXISTS first_name TEXT;
+ALTER TABLE users    ADD COLUMN IF NOT EXISTS last_name TEXT;
+ALTER TABLE users    ADD COLUMN IF NOT EXISTS phone TEXT;
+ALTER TABLE users    ADD COLUMN IF NOT EXISTS address TEXT;
+ALTER TABLE users    ADD COLUMN IF NOT EXISTS supervisor_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
 ALTER TABLE users    ADD COLUMN IF NOT EXISTS position_id INTEGER REFERENCES positions(id);
 ALTER TABLE positions ADD COLUMN IF NOT EXISTS perm_accept  BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE positions ADD COLUMN IF NOT EXISTS perm_execute BOOLEAN NOT NULL DEFAULT FALSE;
