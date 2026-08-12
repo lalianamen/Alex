@@ -696,7 +696,7 @@ function openUserModal(user, positions, allUsers) {
         </select>
       </label>
       <label>Role
-        <select id="u-role">${Object.entries(ROLE_LABEL).map(([k, v]) => `<option value="${k}" ${user && user.role === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>
+        <select id="u-role">${Object.entries(ROLE_LABEL).map(([k, v]) => `<option value="${k}" ${(user ? user.role === k : k === 'employee') ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>
       </label>
       <label id="u-pos-label">Position
         <select id="u-pos">${positionOptionList(positions, user ? user.position_id : null)}</select>
