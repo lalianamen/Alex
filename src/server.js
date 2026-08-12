@@ -77,16 +77,6 @@ function requirePerm(perm) {
   };
 }
 
-// Guard: only the super administrator (the built-in "admin"). Regular admins
-// have every other power but cannot permanently delete companies/divisions.
-function requireSuper(req, res, next) {
-  if (!req.user) return res.status(401).json({ error: 'Authentication required' });
-  if (req.user.role !== 'admin' || !req.user.is_super) {
-    return res.status(403).json({ error: 'Only the main administrator can delete — deactivate instead' });
-  }
-  next();
-}
-
 function toId(v) {
   const n = Number(v);
   return Number.isInteger(n) && n > 0 ? n : null;
@@ -240,7 +230,8 @@ const setCompanyActive = (active) => async (req, res) => {
 app.post('/api/companies/:id/deactivate', requireRole('admin'), setCompanyActive(false));
 app.post('/api/companies/:id/restore', requireRole('admin'), setCompanyActive(true));
 
-app.delete('/api/companies/:id', requireSuper, async (req, res) => {
+// A System Administrator has full access, including deleting an (empty) company.
+app.delete('/api/companies/:id', requireRole('admin'), async (req, res) => {
   const c = await one('SELECT * FROM companies WHERE id = $1', [toId(req.params.id)]);
   if (!c) return res.status(404).json({ error: 'Company not found' });
   if (await one('SELECT 1 FROM sites WHERE company_id = $1 LIMIT 1', [c.id])) {
@@ -316,18 +307,11 @@ app.post('/api/sites/:id/restore', requireRole('admin'), setDivisionActive(true)
 
 // Only the super administrator may permanently delete a division, and only when
 // nothing references it (positions, employees or requests) so history is safe.
-app.delete('/api/sites/:id', requireSuper, async (req, res) => {
-  const s = await one('SELECT * FROM sites WHERE id = $1', [toId(req.params.id)]);
-  if (!s) return res.status(404).json({ error: 'Division not found' });
-  const used =
-    (await one('SELECT 1 FROM positions WHERE site_id = $1 LIMIT 1', [s.id])) ||
-    (await one('SELECT 1 FROM users WHERE site_id = $1 LIMIT 1', [s.id])) ||
-    (await one('SELECT 1 FROM requests WHERE site_id = $1 OR target_site_id = $1 LIMIT 1', [s.id]));
-  if (used) {
-    return res.status(400).json({ error: 'This division is in use and cannot be deleted — deactivate it instead' });
-  }
-  await query('DELETE FROM sites WHERE id = $1', [s.id]);
-  res.json({ ok: true });
+// Divisions are never deleted — only deactivated — so request history and
+// positions keep their references. This applies to everyone, the main
+// administrator included.
+app.delete('/api/sites/:id', requireRole('admin'), async (req, res) => {
+  res.status(400).json({ error: 'Divisions cannot be deleted — deactivate it instead' });
 });
 
 // ---------------------------------------------------------------------------

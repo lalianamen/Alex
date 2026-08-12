@@ -893,7 +893,6 @@ async function renderDivisions() {
             ${s.is_active
               ? `<button class="btn btn-sm btn-danger" data-action="deactivate" data-id="${s.id}">Deactivate</button>`
               : `<button class="btn btn-sm btn-success" data-action="restore" data-id="${s.id}">Restore</button>`}
-            ${currentUser.is_super ? `<button class="btn btn-sm btn-danger" data-action="delete" data-id="${s.id}">Delete</button>` : ''}
           </td>
         </tr>`).join('')}</tbody>
       </table>` : '<div class="empty-state">No divisions yet. Add a company first.</div>'}
@@ -966,7 +965,7 @@ async function renderCompanies() {
             ${c.is_active
               ? `<button class="btn btn-sm btn-danger" data-action="deactivate" data-id="${c.id}">Deactivate</button>`
               : `<button class="btn btn-sm btn-success" data-action="restore" data-id="${c.id}">Restore</button>`}
-            ${currentUser.is_super ? `<button class="btn btn-sm btn-danger" data-action="delete" data-id="${c.id}">Delete</button>` : ''}
+            <button class="btn btn-sm btn-danger" data-action="delete" data-id="${c.id}">Delete</button>
           </td>
         </tr>`).join('')}</tbody>
       </table>` : '<div class="empty-state">No companies yet.</div>'}
