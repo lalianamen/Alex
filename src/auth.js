@@ -20,9 +20,18 @@ async function destroySession(token) {
 
 async function getSessionUser(token) {
   if (!token) return null;
+  // Pull the position's permissions and title onto the user so route handlers
+  // can check them directly. Non-position users get NULLs (treated as false).
   const user = await one(
-    `SELECT u.* FROM sessions s
+    `SELECT u.*,
+            p.title          AS position_title,
+            COALESCE(p.perm_create, FALSE)    AS perm_create,
+            COALESCE(p.perm_view_site, FALSE) AS perm_view_site,
+            COALESCE(p.perm_cancel, FALSE)    AS perm_cancel,
+            COALESCE(p.perm_reports, FALSE)   AS perm_reports
+     FROM sessions s
      JOIN users u ON u.id = s.user_id
+     LEFT JOIN positions p ON p.id = u.position_id
      WHERE s.token = $1 AND s.expires_at > now() AND u.is_active`,
     [token]
   );
@@ -46,4 +55,6 @@ function requireRole(...roles) {
   };
 }
 
-module.exports = { COOKIE_NAME, createSession, destroySession, sessionMiddleware, requireRole };
+module.exports = {
+  COOKIE_NAME, createSession, destroySession, getSessionUser, sessionMiddleware, requireRole,
+};

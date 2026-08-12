@@ -96,6 +96,21 @@ CREATE TABLE IF NOT EXISTS departments (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- A position (должность) belongs to a site (address) and carries a fixed set of
+-- permissions. It is permanent (deactivated, never deleted); the person filling
+-- it changes over time.
+CREATE TABLE IF NOT EXISTS positions (
+  id              SERIAL PRIMARY KEY,
+  site_id         INTEGER NOT NULL REFERENCES sites(id),
+  title           TEXT NOT NULL,
+  perm_create     BOOLEAN NOT NULL DEFAULT TRUE,
+  perm_view_site  BOOLEAN NOT NULL DEFAULT FALSE,
+  perm_cancel     BOOLEAN NOT NULL DEFAULT FALSE,
+  perm_reports    BOOLEAN NOT NULL DEFAULT FALSE,
+  is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS users (
   id            SERIAL PRIMARY KEY,
   login         TEXT NOT NULL,
@@ -104,6 +119,7 @@ CREATE TABLE IF NOT EXISTS users (
   role          TEXT NOT NULL CHECK (role IN ('admin','owner','site_admin','manager','executor')),
   department_id INTEGER REFERENCES departments(id),
   site_id       INTEGER REFERENCES sites(id),
+  position_id   INTEGER REFERENCES positions(id),
   is_active         BOOLEAN NOT NULL DEFAULT TRUE,
   -- When true the user has no usable password and must set one at next sign-in.
   must_set_password BOOLEAN NOT NULL DEFAULT FALSE,
@@ -128,10 +144,14 @@ CREATE TABLE IF NOT EXISTS requests (
   status        TEXT NOT NULL DEFAULT 'new'
                 CHECK (status IN ('new','in_progress','done','closed','rejected','cancelled')),
   site_id       INTEGER REFERENCES sites(id),
+  position_id   INTEGER REFERENCES positions(id),
   department_id INTEGER NOT NULL REFERENCES departments(id),
-  created_by    INTEGER NOT NULL REFERENCES users(id),
-  manager_id    INTEGER REFERENCES users(id),
-  executor_id   INTEGER REFERENCES users(id),
+  -- created_by may become NULL if the employee is later deleted; created_by_name
+  -- is a snapshot so reporting survives that deletion.
+  created_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_by_name TEXT NOT NULL DEFAULT '',
+  manager_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  executor_id   INTEGER REFERENCES users(id) ON DELETE SET NULL,
   due_date      TEXT,
   reject_reason TEXT,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -144,7 +164,8 @@ CREATE TABLE IF NOT EXISTS requests (
 CREATE TABLE IF NOT EXISTS request_events (
   id         SERIAL PRIMARY KEY,
   request_id INTEGER NOT NULL REFERENCES requests(id),
-  user_id    INTEGER NOT NULL REFERENCES users(id),
+  user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  user_name  TEXT NOT NULL DEFAULT '',
   action     TEXT NOT NULL,
   comment    TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -171,8 +192,37 @@ ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
 UPDATE users SET role = 'site_admin' WHERE role = 'dept_admin';
 ALTER TABLE users ADD CONSTRAINT users_role_check
   CHECK (role IN ('admin','owner','site_admin','manager','executor'));
+
+-- Positions (положения) and request attribution snapshots.
+ALTER TABLE users    ADD COLUMN IF NOT EXISTS position_id INTEGER REFERENCES positions(id);
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS position_id INTEGER REFERENCES positions(id);
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS created_by_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE request_events ADD COLUMN IF NOT EXISTS user_name TEXT NOT NULL DEFAULT '';
+UPDATE requests r SET created_by_name = u.full_name
+  FROM users u WHERE r.created_by = u.id AND r.created_by_name = '';
+UPDATE request_events e SET user_name = u.full_name
+  FROM users u WHERE e.user_id = u.id AND e.user_name = '';
+
+-- Relax the person foreign keys so an employee can be hard-deleted without
+-- losing request history (the name snapshots above preserve reporting).
+ALTER TABLE requests ALTER COLUMN created_by DROP NOT NULL;
+ALTER TABLE requests DROP CONSTRAINT IF EXISTS requests_created_by_fkey;
+ALTER TABLE requests ADD CONSTRAINT requests_created_by_fkey
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE requests DROP CONSTRAINT IF EXISTS requests_manager_id_fkey;
+ALTER TABLE requests ADD CONSTRAINT requests_manager_id_fkey
+  FOREIGN KEY (manager_id) REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE requests DROP CONSTRAINT IF EXISTS requests_executor_id_fkey;
+ALTER TABLE requests ADD CONSTRAINT requests_executor_id_fkey
+  FOREIGN KEY (executor_id) REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE request_events ALTER COLUMN user_id DROP NOT NULL;
+ALTER TABLE request_events DROP CONSTRAINT IF EXISTS request_events_user_id_fkey;
+ALTER TABLE request_events ADD CONSTRAINT request_events_user_id_fkey
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL;
+
 -- Created after the site_id column exists (base schema runs first, then this).
 CREATE INDEX IF NOT EXISTS idx_requests_site ON requests(site_id);
+CREATE INDEX IF NOT EXISTS idx_positions_site ON positions(site_id);
 `;
 
 // The schema is created lazily on first use (on serverless hosting each
@@ -202,4 +252,10 @@ async function initSchema() {
   }
 }
 
-module.exports = { pool, query, one, all, ready, ROLES, DEPT_ROLES, SITE_ROLES, STATUSES, PRIORITIES };
+// Permission flags a position may grant.
+const POSITION_PERMS = ['perm_create', 'perm_view_site', 'perm_cancel', 'perm_reports'];
+
+module.exports = {
+  pool, query, one, all, ready,
+  ROLES, DEPT_ROLES, SITE_ROLES, STATUSES, PRIORITIES, POSITION_PERMS,
+};

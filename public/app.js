@@ -145,6 +145,26 @@ function optionList(items, selectedId) {
     .join('');
 }
 
+// Position options labelled "Site — Title"; active only, keeping the selected one.
+function positionOptionList(items, selectedId) {
+  return items
+    .filter((p) => p.is_active || p.id === selectedId)
+    .map((p) => `<option value="${p.id}" ${p.id === selectedId ? 'selected' : ''}>${esc(p.site_name)} — ${esc(p.title)}${p.is_active ? '' : ' (inactive)'}</option>`)
+    .join('');
+}
+
+// Human-readable summary of a position's permissions.
+const PERM_LABEL = {
+  perm_create: 'Create requests',
+  perm_view_site: 'View all site requests',
+  perm_cancel: 'Cancel requests',
+  perm_reports: 'View site reports',
+};
+function permSummary(p) {
+  const on = Object.keys(PERM_LABEL).filter((k) => p[k]).map((k) => PERM_LABEL[k]);
+  return on.length ? on.join(', ') : 'No permissions';
+}
+
 // ---------------------------------------------------------------------------
 // Sign in / out
 // ---------------------------------------------------------------------------
@@ -271,6 +291,7 @@ $('#btn-change-password').addEventListener('click', () => {
 const TABS_BY_ROLE = {
   admin: [
     { id: 'users', title: 'Users' },
+    { id: 'positions', title: 'Positions' },
     { id: 'departments', title: 'Departments' },
     { id: 'sites', title: 'Sites' },
   ],
@@ -278,18 +299,30 @@ const TABS_BY_ROLE = {
     { id: 'requests', title: 'Requests' },
     { id: 'reports', title: 'Reports' },
   ],
-  site_admin: [{ id: 'requests', title: 'Requests' }],
   manager: [{ id: 'requests', title: 'Requests' }],
   executor: [{ id: 'requests', title: 'My Work' }],
 };
+
+// Site administrators see Requests, plus Reports only if their position allows it.
+function tabsForUser() {
+  if (currentUser.role === 'site_admin') {
+    const tabs = [{ id: 'requests', title: 'Requests' }];
+    if (currentUser.perm_reports) tabs.push({ id: 'reports', title: 'Reports' });
+    return tabs;
+  }
+  return TABS_BY_ROLE[currentUser.role] || [];
+}
 
 function showApp() {
   $('#login-screen').classList.add('hidden');
   $('#app').classList.remove('hidden');
   $('#user-name').textContent = currentUser.full_name;
-  $('#user-role').textContent = ROLE_LABEL[currentUser.role] || currentUser.role;
+  $('#user-role').textContent =
+    currentUser.position_title
+      ? `${currentUser.position_title}`
+      : ROLE_LABEL[currentUser.role] || currentUser.role;
 
-  const tabs = TABS_BY_ROLE[currentUser.role] || [];
+  const tabs = tabsForUser();
   const nav = $('#nav-tabs');
   nav.innerHTML = '';
   for (const t of tabs) {
@@ -312,6 +345,7 @@ function setTab(id) {
     requests: renderRequests,
     reports: renderReports,
     users: renderUsers,
+    positions: renderPositions,
     departments: () => renderNamedList('departments'),
     sites: () => renderNamedList('sites'),
   }[id];
@@ -328,6 +362,7 @@ function requestColumns(role) {
   return {
     site: role === 'owner' || role === 'manager',
     department: role !== 'manager',
+    createdby: role === 'owner' || role === 'site_admin',
     supervisor: role === 'owner' || role === 'site_admin',
     executor: role === 'owner' || role === 'manager' || role === 'site_admin',
   };
@@ -364,7 +399,7 @@ async function renderRequests() {
           <option value="">All statuses</option>
           ${Object.entries(STATUS_LABEL).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}
         </select>
-        ${role === 'site_admin' ? '<button id="btn-new-request" class="btn btn-primary">+ New request</button>' : ''}
+        ${role === 'site_admin' && currentUser.perm_create ? '<button id="btn-new-request" class="btn btn-primary">+ New request</button>' : ''}
       </div>
     </div>
     <div class="card"><div id="requests-table"></div></div>
@@ -375,7 +410,9 @@ async function renderRequests() {
     $('#flt-dept').addEventListener('change', loadRequests);
     $('#flt-site').addEventListener('change', loadRequests);
   }
-  if (role === 'site_admin') $('#btn-new-request').addEventListener('click', openNewRequestModal);
+  if (role === 'site_admin' && currentUser.perm_create) {
+    $('#btn-new-request').addEventListener('click', openNewRequestModal);
+  }
 
   await loadRequests();
 }
@@ -400,6 +437,7 @@ async function loadRequests() {
   if (cols.site) head.push('<th>Site</th>');
   if (cols.department) head.push('<th>Department</th>');
   head.push('<th>Status</th>', '<th>Priority</th>');
+  if (cols.createdby) head.push('<th>Created by</th>');
   if (cols.supervisor) head.push('<th>Supervisor</th>');
   if (cols.executor) head.push('<th>Executor</th>');
   head.push('<th>Due</th>', '<th>Created</th>');
@@ -413,6 +451,7 @@ async function loadRequests() {
           if (cols.site) cells.push(`<td>${esc(r.site_name || '—')}</td>`);
           if (cols.department) cells.push(`<td>${esc(r.department_name)}</td>`);
           cells.push(`<td>${statusBadge(r.status)}</td>`, `<td>${priorityCell(r.priority)}</td>`);
+          if (cols.createdby) cells.push(`<td>${esc(r.created_by_name || '—')}</td>`);
           if (cols.supervisor) cells.push(`<td>${esc(r.manager_name || '—')}</td>`);
           if (cols.executor) cells.push(`<td>${esc(r.executor_name || '—')}</td>`);
           cells.push(`<td>${fmtDay(r.due_date)}</td>`, `<td>${fmtDate(r.created_at)}</td>`);
@@ -500,7 +539,7 @@ async function openRequestModal(id) {
   if (role === 'executor' && r.executor_id === currentUser.id && r.status === 'in_progress') {
     actions.push('<button class="btn btn-success" data-action="done">Mark completed</button>');
   }
-  if (role === 'site_admin' && r.status === 'new') {
+  if (role === 'site_admin' && currentUser.perm_cancel && r.status === 'new') {
     actions.push('<button class="btn btn-danger" data-action="cancel">Cancel request</button>');
   }
 
@@ -511,7 +550,7 @@ async function openRequestModal(id) {
       <dt>Priority</dt><dd>${priorityCell(r.priority)}</dd>
       <dt>Site</dt><dd>${esc(r.site_name || '—')}</dd>
       <dt>Department</dt><dd>${esc(r.department_name)}</dd>
-      <dt>Created by</dt><dd>${esc(r.created_by_name)}</dd>
+      <dt>Created by</dt><dd>${esc(r.created_by_name || '—')}${r.position_title ? ` <span class="muted">(${esc(r.position_title)})</span>` : ''}</dd>
       <dt>Supervisor</dt><dd>${esc(r.manager_name || 'not accepted yet')}</dd>
       <dt>Executor</dt><dd>${esc(r.executor_name || 'not assigned')}</dd>
       <dt>Due</dt><dd>${fmtDay(r.due_date)}</dd>
@@ -689,11 +728,18 @@ async function renderReports() {
 // Users (system administrator)
 // ---------------------------------------------------------------------------
 
+// A user's attachment: a position (with its site) for site admins, a department
+// for supervisors/executors.
+function userAttachment(u) {
+  if (u.position_title) return `${u.position_title}${u.site_name ? ' — ' + u.site_name : ''}`;
+  return u.department_name || '—';
+}
+
 async function renderUsers() {
-  const [{ users }, { departments }, { sites }] = await Promise.all([
+  const [{ users }, { departments }, { positions }] = await Promise.all([
     api('/api/users'),
     api('/api/departments'),
-    api('/api/sites'),
+    api('/api/positions'),
   ]);
 
   $('#main').innerHTML = `
@@ -705,7 +751,7 @@ async function renderUsers() {
       ${users.length ? `
       <table>
         <thead><tr>
-          <th>Full name</th><th>Username</th><th>Role</th><th>Department / Site</th><th>Status</th><th></th>
+          <th>Full name</th><th>Username</th><th>Role</th><th>Department / Position</th><th>Status</th><th></th>
         </tr></thead>
         <tbody>
           ${users.map((u) => `
@@ -713,7 +759,7 @@ async function renderUsers() {
               <td>${esc(u.full_name)}</td>
               <td>${esc(u.login)}</td>
               <td>${esc(ROLE_LABEL[u.role] || u.role)}</td>
-              <td>${esc(u.department_name || u.site_name || '—')}</td>
+              <td>${esc(userAttachment(u))}</td>
               <td><span class="badge ${u.is_active ? 'badge-active' : 'badge-inactive'}">
                 ${u.is_active ? 'Active' : 'Disabled'}</span></td>
               <td style="text-align:right; white-space:nowrap">
@@ -722,6 +768,7 @@ async function renderUsers() {
                 ${u.id !== currentUser.id ? (u.is_active
                   ? `<button class="btn btn-sm btn-danger" data-action="deactivate" data-id="${u.id}">Disable</button>`
                   : `<button class="btn btn-sm btn-success" data-action="restore" data-id="${u.id}">Restore</button>`) : ''}
+                ${u.id !== currentUser.id ? `<button class="btn btn-sm btn-danger" data-action="delete" data-id="${u.id}">Delete</button>` : ''}
               </td>
             </tr>`).join('')}
         </tbody>
@@ -729,7 +776,7 @@ async function renderUsers() {
     </div>
   `;
 
-  $('#btn-new-user').addEventListener('click', () => openUserModal(null, departments, sites));
+  $('#btn-new-user').addEventListener('click', () => openUserModal(null, departments, positions));
   $('#main').onclick = async (e) => {
     const btn = e.target.closest('button[data-action]');
     if (!btn) return;
@@ -737,7 +784,7 @@ async function renderUsers() {
     const user = users.find((u) => u.id === id);
     switch (btn.dataset.action) {
       case 'edit':
-        openUserModal(user, departments, sites);
+        openUserModal(user, departments, positions);
         break;
       case 'password':
         openResetPasswordModal(user);
@@ -758,11 +805,20 @@ async function renderUsers() {
           renderUsers();
         } catch (err) { toast(err.message); }
         break;
+      case 'delete':
+        if (confirm(`Delete “${user.full_name}” permanently? Request history is kept.`)) {
+          try {
+            await api(`/api/users/${id}`, { method: 'DELETE' });
+            toast('User deleted');
+            renderUsers();
+          } catch (err) { toast(err.message); }
+        }
+        break;
     }
   };
 }
 
-function openUserModal(user, departments, sites) {
+function openUserModal(user, departments, positions) {
   const isNew = !user;
   openModal(`
     <h3>${isNew ? 'New user' : 'Edit user'}</h3>
@@ -782,9 +838,9 @@ function openUserModal(user, departments, sites) {
         <select id="u-dept">${optionList(departments, user ? user.department_id : null)}</select>
         <div id="u-dept-hint" class="field-hint hidden">No departments yet — add one on the Departments tab first.</div>
       </label>
-      <label id="u-site-label">Site
-        <select id="u-site">${optionList(sites, user ? user.site_id : null)}</select>
-        <div id="u-site-hint" class="field-hint hidden">No sites yet — add one on the Sites tab first.</div>
+      <label id="u-pos-label">Position
+        <select id="u-pos">${positionOptionList(positions, user ? user.position_id : null)}</select>
+        <div id="u-pos-hint" class="field-hint hidden">No positions yet — add one on the Positions tab first.</div>
       </label>
       <div id="u-error" class="form-error hidden"></div>
       <div class="modal-actions">
@@ -795,20 +851,20 @@ function openUserModal(user, departments, sites) {
   `);
 
   const hasActiveDept = departments.some((d) => d.is_active) || (user && user.department_id);
-  const hasActiveSite = sites.some((s) => s.is_active) || (user && user.site_id);
+  const hasActivePos = positions.some((p) => p.is_active) || (user && user.position_id);
   const roleSelect = $('#u-role');
   const syncFields = () => {
     const needDept = DEPT_ROLES.includes(roleSelect.value);
-    const needSite = SITE_ROLES.includes(roleSelect.value);
+    const needPos = SITE_ROLES.includes(roleSelect.value);
     $('#u-dept-label').style.display = needDept ? '' : 'none';
-    $('#u-site-label').style.display = needSite ? '' : 'none';
+    $('#u-pos-label').style.display = needPos ? '' : 'none';
     const deptMissing = needDept && !hasActiveDept;
-    const siteMissing = needSite && !hasActiveSite;
+    const posMissing = needPos && !hasActivePos;
     $('#u-dept-hint').classList.toggle('hidden', !deptMissing);
-    $('#u-site-hint').classList.toggle('hidden', !siteMissing);
+    $('#u-pos-hint').classList.toggle('hidden', !posMissing);
     $('#u-dept').style.display = deptMissing ? 'none' : '';
-    $('#u-site').style.display = siteMissing ? 'none' : '';
-    $('#u-submit').disabled = deptMissing || siteMissing;
+    $('#u-pos').style.display = posMissing ? 'none' : '';
+    $('#u-submit').disabled = deptMissing || posMissing;
   };
   roleSelect.addEventListener('change', syncFields);
   syncFields();
@@ -821,7 +877,7 @@ function openUserModal(user, departments, sites) {
       login: $('#u-login').value,
       role,
       department_id: DEPT_ROLES.includes(role) ? $('#u-dept').value || null : null,
-      site_id: SITE_ROLES.includes(role) ? $('#u-site').value || null : null,
+      position_id: SITE_ROLES.includes(role) ? $('#u-pos').value || null : null,
     };
     if (isNew) body.password = $('#u-password').value;
     try {
@@ -899,6 +955,7 @@ async function renderNamedList(kind) {
                 ${it.is_active
                   ? `<button class="btn btn-sm btn-danger" data-action="deactivate" data-id="${it.id}">Deactivate</button>`
                   : `<button class="btn btn-sm btn-success" data-action="restore" data-id="${it.id}">Restore</button>`}
+                ${kind === 'departments' ? `<button class="btn btn-sm btn-danger" data-action="delete" data-id="${it.id}">Delete</button>` : ''}
               </td>
             </tr>`).join('')}
         </tbody>
@@ -914,6 +971,13 @@ async function renderNamedList(kind) {
     const action = btn.dataset.action;
     if (action === 'rename') {
       openNamedModal(kind, { id, name: btn.dataset.name });
+    } else if (action === 'delete') {
+      if (!confirm(`Delete this ${meta.singular} permanently?`)) return;
+      try {
+        await api(`/api/${kind}/${id}`, { method: 'DELETE' });
+        toast('Deleted');
+        renderNamedList(kind);
+      } catch (err) { toast(err.message); }
     } else {
       try {
         await api(`/api/${kind}/${id}/${action}`, { method: 'POST', body: {} });
@@ -922,6 +986,104 @@ async function renderNamedList(kind) {
       } catch (err) { toast(err.message); }
     }
   };
+}
+
+// ---------------------------------------------------------------------------
+// Positions (system administrator) — belong to a site, carry permissions
+// ---------------------------------------------------------------------------
+
+async function renderPositions() {
+  const [{ positions }, { sites }] = await Promise.all([
+    api('/api/positions'),
+    api('/api/sites'),
+  ]);
+
+  $('#main').innerHTML = `
+    <div class="page-header">
+      <h2>Positions</h2>
+      <button id="btn-new-pos" class="btn btn-primary">+ Add position</button>
+    </div>
+    <div class="card">
+      ${positions.length ? `
+      <table>
+        <thead><tr><th>Site</th><th>Title</th><th>Permissions</th><th>Status</th><th style="width:200px"></th></tr></thead>
+        <tbody>
+          ${positions.map((p) => `
+            <tr>
+              <td>${esc(p.site_name)}</td>
+              <td>${esc(p.title)}</td>
+              <td class="muted small">${esc(permSummary(p))}</td>
+              <td><span class="badge ${p.is_active ? 'badge-active' : 'badge-inactive'}">
+                ${p.is_active ? 'Active' : 'Inactive'}</span></td>
+              <td style="text-align:right; white-space:nowrap">
+                <button class="btn btn-sm" data-action="edit" data-id="${p.id}">Edit</button>
+                ${p.is_active
+                  ? `<button class="btn btn-sm btn-danger" data-action="deactivate" data-id="${p.id}">Deactivate</button>`
+                  : `<button class="btn btn-sm btn-success" data-action="restore" data-id="${p.id}">Restore</button>`}
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>` : '<div class="empty-state">No positions yet. Add a site first, then create positions for it.</div>'}
+    </div>
+  `;
+
+  $('#btn-new-pos').addEventListener('click', () => openPositionModal(null, sites));
+  $('#main').onclick = async (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const id = Number(btn.dataset.id);
+    const action = btn.dataset.action;
+    if (action === 'edit') {
+      openPositionModal(positions.find((p) => p.id === id), sites);
+    } else {
+      try {
+        await api(`/api/positions/${id}/${action}`, { method: 'POST', body: {} });
+        toast('Saved');
+        renderPositions();
+      } catch (err) { toast(err.message); }
+    }
+  };
+}
+
+function openPositionModal(pos, sites) {
+  const isNew = !pos;
+  const checkbox = (key) =>
+    `<label class="checkline"><input type="checkbox" id="p-${key}" ${pos && pos[key] ? 'checked' : (key === 'perm_create' && isNew ? 'checked' : '')}> ${PERM_LABEL[key]}</label>`;
+  openModal(`
+    <h3>${isNew ? 'New position' : 'Edit position'}</h3>
+    <form id="pos-form">
+      ${isNew
+        ? `<label>Site <select id="p-site">${optionList(sites, null)}</select></label>`
+        : `<label>Site <input type="text" value="${esc(pos.site_name)}" disabled></label>`}
+      <label>Title <input type="text" id="p-title" required maxlength="120" value="${esc(pos ? pos.title : '')}"></label>
+      <div class="perm-group">
+        <div class="perm-group-title">Permissions</div>
+        ${Object.keys(PERM_LABEL).map(checkbox).join('')}
+      </div>
+      <div id="p-error" class="form-error hidden"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary">${isNew ? 'Create' : 'Save'}</button>
+      </div>
+    </form>
+  `);
+  $('#pos-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = { title: $('#p-title').value };
+    for (const key of Object.keys(PERM_LABEL)) body[key] = $(`#p-${key}`).checked;
+    if (isNew) body.site_id = $('#p-site').value;
+    try {
+      await api(isNew ? '/api/positions' : `/api/positions/${pos.id}`, {
+        method: isNew ? 'POST' : 'PUT',
+        body,
+      });
+      closeModal();
+      toast('Saved');
+      renderPositions();
+    } catch (err) {
+      showFormError('#p-error', err.message);
+    }
+  });
 }
 
 function openNamedModal(kind, item) {

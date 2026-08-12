@@ -1,7 +1,6 @@
 'use strict';
 
-// Populate the database with demo data: sites (addresses), service departments,
-// users of every role and a few requests in different statuses.
+// Demo data for the Address -> Position -> Employee model.
 // Run: DATABASE_URL=postgres://... npm run seed:demo
 
 const { pool, query, one, ready } = require('../src/db');
@@ -14,8 +13,7 @@ async function main() {
   }
   await ready();
 
-  const already = await one(`SELECT id FROM users WHERE LOWER(login) = 'owner'`);
-  if (already) {
+  if (await one(`SELECT id FROM users WHERE LOWER(login) = 'owner'`)) {
     console.log('Demo data already loaded — skipping.');
     return;
   }
@@ -24,125 +22,129 @@ async function main() {
     (await query('INSERT INTO sites (name) VALUES ($1) RETURNING id', [name])).rows[0].id;
   const addDept = async (name) =>
     (await query('INSERT INTO departments (name) VALUES ($1) RETURNING id', [name])).rows[0].id;
-  const addUser = async (login, password, fullName, role, deptId, siteId) =>
+  const addPosition = async (siteId, title, perms) =>
     (
       await query(
-        `INSERT INTO users (login, password_hash, full_name, role, department_id, site_id)
+        `INSERT INTO positions (site_id, title, perm_create, perm_view_site, perm_cancel, perm_reports)
          VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-        [login, hashPassword(password), fullName, role, deptId || null, siteId || null]
+        [siteId, title, !!perms.create, !!perms.view, !!perms.cancel, !!perms.reports]
+      )
+    ).rows[0].id;
+  const addUser = async (login, password, fullName, role, { deptId, positionId, siteId } = {}) =>
+    (
+      await query(
+        `INSERT INTO users (login, password_hash, full_name, role, department_id, position_id, site_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+        [login, hashPassword(password), fullName, role, deptId || null, positionId || null, siteId || null]
       )
     ).rows[0].id;
 
-  // Sites (addresses where site administrators work).
   const mainCampus = await addSite('Main Campus — 100 Center St');
   const northHouse = await addSite('North House — 240 Oak Ave');
-  const westClinic = await addSite('West Clinic — 55 Palm Blvd');
 
-  // Service departments that fulfill requests.
   const supply = await addDept('Supply');
   const repair = await addDept('Repair');
   const meds = await addDept('Medication Supply');
 
-  await addUser('owner', 'owner123', 'Robert Owens', 'owner', null, null);
+  // Positions (permanent seats at each address).
+  const mainMgr = await addPosition(mainCampus, 'Site Manager', { create: true, view: true, cancel: true, reports: true });
+  const mainClerk = await addPosition(mainCampus, 'Intake Clerk', { create: true });
+  const northMgr = await addPosition(northHouse, 'Site Manager', { create: true, view: true, cancel: true, reports: true });
 
-  // Site administrators (one per address) — they create requests.
-  const admMain = await addUser('main.admin', 'demo123', 'Anna Kim', 'site_admin', null, mainCampus);
-  const admNorth = await addUser('north.admin', 'demo123', 'Olivia Nelson', 'site_admin', null, northHouse);
-  await addUser('west.admin', 'demo123', 'Daniel Brooks', 'site_admin', null, westClinic);
+  await addUser('owner', 'owner123', 'Robert Owens', 'owner');
 
-  // Supervisors (one per department).
-  const supSupply = await addUser('supply.sup', 'demo123', 'David Miller', 'manager', supply, null);
-  const supRepair = await addUser('repair.sup', 'demo123', 'Michael Turner', 'manager', repair, null);
-  const supMeds = await addUser('meds.sup', 'demo123', 'Sofia Reyes', 'manager', meds, null);
+  // Employees filling positions.
+  const annaId = await addUser('main.mgr', 'demo123', 'Anna Kim', 'site_admin', { positionId: mainMgr, siteId: mainCampus });
+  const carlId = await addUser('main.clerk', 'demo123', 'Carl Reyes', 'site_admin', { positionId: mainClerk, siteId: mainCampus });
+  const oliviaId = await addUser('north.mgr', 'demo123', 'Olivia Nelson', 'site_admin', { positionId: northMgr, siteId: northHouse });
 
-  // Executors.
-  const exSupply = await addUser('supply.ex1', 'demo123', 'James Carter', 'executor', supply, null);
-  await addUser('supply.ex2', 'demo123', 'Emily Parker', 'executor', supply, null);
-  const exRepair = await addUser('repair.ex1', 'demo123', 'Alex Grant', 'executor', repair, null);
-  const exMeds = await addUser('meds.ex1', 'demo123', 'Grace Lee', 'executor', meds, null);
+  // Department staff.
+  const supSupply = await addUser('supply.sup', 'demo123', 'David Miller', 'manager', { deptId: supply });
+  const supRepair = await addUser('repair.sup', 'demo123', 'Michael Turner', 'manager', { deptId: repair });
+  const supMeds = await addUser('meds.sup', 'demo123', 'Sofia Reyes', 'manager', { deptId: meds });
+  const exSupply = await addUser('supply.ex1', 'demo123', 'James Carter', 'executor', { deptId: supply });
+  await addUser('supply.ex2', 'demo123', 'Emily Parker', 'executor', { deptId: supply });
+  const exRepair = await addUser('repair.ex1', 'demo123', 'Alex Grant', 'executor', { deptId: repair });
+  const exMeds = await addUser('meds.ex1', 'demo123', 'Grace Lee', 'executor', { deptId: meds });
 
-  const addRequest = async (fields) =>
+  const addRequest = async (f) =>
     (
       await query(
-        `INSERT INTO requests (title, description, priority, status, site_id, department_id,
-           created_by, manager_id, executor_id, due_date, reject_reason,
+        `INSERT INTO requests (title, description, priority, status, site_id, position_id, department_id,
+           created_by, created_by_name, manager_id, executor_id, due_date, reject_reason,
            created_at, accepted_at, done_at, closed_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
-        fields
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
+        f
       )
     ).rows[0].id;
-  const addEvent = (requestId, userId, action, comment, createdAt) =>
+  const addEvent = (rid, uid, uname, action, comment, at) =>
     query(
-      `INSERT INTO request_events (request_id, user_id, action, comment, created_at)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [requestId, userId, action, comment, createdAt]
+      `INSERT INTO request_events (request_id, user_id, user_name, action, comment, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [rid, uid, uname, action, comment, at]
     );
 
   const now = Date.now();
   const daysAgo = (n) => new Date(now - n * 24 * 3600 * 1000);
   const inDays = (n) => new Date(now + n * 24 * 3600 * 1000).toISOString().slice(0, 10);
 
-  // New request from Main Campus to Supply.
+  // New request from Main Campus (Intake Clerk) to Supply.
   let id = await addRequest([
-    'Order office supplies for the front desk', 'Paper, pens, folders for the new intake desk.',
-    'normal', 'new', mainCampus, supply, admMain, null, null, inDays(4), null,
+    'Order office supplies for the front desk', 'Paper, pens, folders for the intake desk.',
+    'normal', 'new', mainCampus, mainClerk, supply, carlId, 'Carl Reyes', null, null, inDays(4), null,
     daysAgo(1), null, null, null,
   ]);
-  await addEvent(id, admMain, 'created', null, daysAgo(1));
+  await addEvent(id, carlId, 'Carl Reyes', 'created', null, daysAgo(1));
 
-  // In-progress request from North House to Repair.
+  // In-progress from North House (Site Manager) to Repair.
   id = await addRequest([
     'Fix the leaking sink in room 3', 'Water pooling under the sink, needs a plumber.',
-    'high', 'in_progress', northHouse, repair, admNorth, supRepair, exRepair, inDays(1), null,
+    'high', 'in_progress', northHouse, northMgr, repair, oliviaId, 'Olivia Nelson', supRepair, exRepair, inDays(1), null,
     daysAgo(2), daysAgo(1), null, null,
   ]);
-  await addEvent(id, admNorth, 'created', null, daysAgo(2));
-  await addEvent(id, supRepair, 'accepted', 'Executor: Alex Grant', daysAgo(1));
+  await addEvent(id, oliviaId, 'Olivia Nelson', 'created', null, daysAgo(2));
+  await addEvent(id, supRepair, 'Michael Turner', 'accepted', 'Executor: Alex Grant', daysAgo(1));
 
-  // Closed request from Main Campus to Medication Supply.
+  // Closed from Main Campus (Site Manager) to Medication Supply.
   id = await addRequest([
     'Restock first-aid medications', 'Bandages and antiseptics are running low.',
-    'high', 'closed', mainCampus, meds, admMain, supMeds, exMeds, null, null,
+    'high', 'closed', mainCampus, mainMgr, meds, annaId, 'Anna Kim', supMeds, exMeds, null, null,
     daysAgo(6), daysAgo(5), daysAgo(4), daysAgo(4),
   ]);
-  await addEvent(id, admMain, 'created', null, daysAgo(6));
-  await addEvent(id, supMeds, 'accepted', 'Executor: Grace Lee', daysAgo(5));
-  await addEvent(id, exMeds, 'done', 'Medications restocked.', daysAgo(4));
-  await addEvent(id, supMeds, 'closed', null, daysAgo(4));
+  await addEvent(id, annaId, 'Anna Kim', 'created', null, daysAgo(6));
+  await addEvent(id, supMeds, 'Sofia Reyes', 'accepted', 'Executor: Grace Lee', daysAgo(5));
+  await addEvent(id, exMeds, 'Grace Lee', 'done', 'Medications restocked.', daysAgo(4));
+  await addEvent(id, supMeds, 'Sofia Reyes', 'closed', null, daysAgo(4));
 
-  // Completed but not yet closed request from North House to Supply.
+  // Completed (awaiting close) from North House to Supply.
   id = await addRequest([
-    'Deliver cleaning supplies', 'Need mops, detergent and gloves for the week.',
-    'normal', 'done', northHouse, supply, admNorth, supSupply, exSupply, inDays(0), null,
+    'Deliver cleaning supplies', 'Mops, detergent and gloves for the week.',
+    'normal', 'done', northHouse, northMgr, supply, oliviaId, 'Olivia Nelson', supSupply, exSupply, inDays(0), null,
     daysAgo(3), daysAgo(2), daysAgo(1), null,
   ]);
-  await addEvent(id, admNorth, 'created', null, daysAgo(3));
-  await addEvent(id, supSupply, 'accepted', 'Executor: James Carter', daysAgo(2));
-  await addEvent(id, exSupply, 'done', 'Supplies delivered.', daysAgo(1));
+  await addEvent(id, oliviaId, 'Olivia Nelson', 'created', null, daysAgo(3));
+  await addEvent(id, supSupply, 'David Miller', 'accepted', 'Executor: James Carter', daysAgo(2));
+  await addEvent(id, exSupply, 'James Carter', 'done', 'Supplies delivered.', daysAgo(1));
 
-  // Rejected request from Main Campus to Repair.
+  // Rejected from Main Campus to Repair.
   id = await addRequest([
     'Repaint the lobby', 'The paint looks worn.',
-    'low', 'rejected', mainCampus, repair, admMain, supRepair, null, null,
+    'low', 'rejected', mainCampus, mainMgr, repair, annaId, 'Anna Kim', supRepair, null, null,
     "Not in this quarter's budget.",
     daysAgo(5), null, null, null,
   ]);
-  await addEvent(id, admMain, 'created', null, daysAgo(5));
-  await addEvent(id, supRepair, 'rejected', "Not in this quarter's budget.", daysAgo(4));
+  await addEvent(id, annaId, 'Anna Kim', 'created', null, daysAgo(5));
+  await addEvent(id, supRepair, 'Michael Turner', 'rejected', "Not in this quarter's budget.", daysAgo(4));
 
   console.log('Demo data loaded.');
   console.log('Accounts (username / password):');
-  console.log('  admin        / admin123  — system administrator');
-  console.log('  owner        / owner123  — owner');
-  console.log('  main.admin   / demo123   — site administrator, Main Campus');
-  console.log('  north.admin  / demo123   — site administrator, North House');
-  console.log('  west.admin   / demo123   — site administrator, West Clinic');
-  console.log('  supply.sup   / demo123   — supervisor, Supply');
-  console.log('  repair.sup   / demo123   — supervisor, Repair');
-  console.log('  meds.sup     / demo123   — supervisor, Medication Supply');
-  console.log('  supply.ex1   / demo123   — executor, Supply');
-  console.log('  repair.ex1   / demo123   — executor, Repair');
-  console.log('  meds.ex1     / demo123   — executor, Medication Supply');
+  console.log('  admin       / admin123  — system administrator');
+  console.log('  owner       / owner123  — owner');
+  console.log('  main.mgr    / demo123   — Site Manager @ Main Campus (all permissions)');
+  console.log('  main.clerk  / demo123   — Intake Clerk @ Main Campus (create only)');
+  console.log('  north.mgr   / demo123   — Site Manager @ North House (all permissions)');
+  console.log('  supply.sup / repair.sup / meds.sup   / demo123 — department supervisors');
+  console.log('  supply.ex1 / repair.ex1 / meds.ex1   / demo123 — department executors');
 }
 
 main()
