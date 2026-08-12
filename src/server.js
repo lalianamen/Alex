@@ -46,6 +46,7 @@ function publicUser(u) {
     position_id: u.position_id,
     position_title: u.position_title || null,
     is_active: !!u.is_active,
+    is_super: !!u.is_super,
     must_set_password: !!u.must_set_password,
     // Effective permissions (from the position); false for non-employee users.
     perm_create: !!u.perm_create,
@@ -67,6 +68,16 @@ function requirePerm(perm) {
     }
     next();
   };
+}
+
+// Guard: only the super administrator (the built-in "admin"). Regular admins
+// have every other power but cannot permanently delete companies/divisions.
+function requireSuper(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+  if (req.user.role !== 'admin' || !req.user.is_super) {
+    return res.status(403).json({ error: 'Only the main administrator can delete — deactivate instead' });
+  }
+  next();
 }
 
 function toId(v) {
@@ -222,7 +233,7 @@ const setCompanyActive = (active) => async (req, res) => {
 app.post('/api/companies/:id/deactivate', requireRole('admin'), setCompanyActive(false));
 app.post('/api/companies/:id/restore', requireRole('admin'), setCompanyActive(true));
 
-app.delete('/api/companies/:id', requireRole('admin'), async (req, res) => {
+app.delete('/api/companies/:id', requireSuper, async (req, res) => {
   const c = await one('SELECT * FROM companies WHERE id = $1', [toId(req.params.id)]);
   if (!c) return res.status(404).json({ error: 'Company not found' });
   if (await one('SELECT 1 FROM sites WHERE company_id = $1 LIMIT 1', [c.id])) {
@@ -295,6 +306,22 @@ const setDivisionActive = (active) => async (req, res) => {
 };
 app.post('/api/sites/:id/deactivate', requireRole('admin'), setDivisionActive(false));
 app.post('/api/sites/:id/restore', requireRole('admin'), setDivisionActive(true));
+
+// Only the super administrator may permanently delete a division, and only when
+// nothing references it (positions, employees or requests) so history is safe.
+app.delete('/api/sites/:id', requireSuper, async (req, res) => {
+  const s = await one('SELECT * FROM sites WHERE id = $1', [toId(req.params.id)]);
+  if (!s) return res.status(404).json({ error: 'Division not found' });
+  const used =
+    (await one('SELECT 1 FROM positions WHERE site_id = $1 LIMIT 1', [s.id])) ||
+    (await one('SELECT 1 FROM users WHERE site_id = $1 LIMIT 1', [s.id])) ||
+    (await one('SELECT 1 FROM requests WHERE site_id = $1 OR target_site_id = $1 LIMIT 1', [s.id]));
+  if (used) {
+    return res.status(400).json({ error: 'This division is in use and cannot be deleted — deactivate it instead' });
+  }
+  await query('DELETE FROM sites WHERE id = $1', [s.id]);
+  res.json({ ok: true });
+});
 
 // ---------------------------------------------------------------------------
 // Positions (belong to a division, carry permissions; never deleted)
@@ -468,6 +495,7 @@ app.post('/api/users/:id/password', requireRole('admin'), async (req, res) => {
 app.post('/api/users/:id/deactivate', requireRole('admin'), async (req, res) => {
   const user = await one('SELECT * FROM users WHERE id = $1', [toId(req.params.id)]);
   if (!user) return res.status(404).json({ error: 'User not found' });
+  if (user.is_super) return res.status(400).json({ error: 'The main administrator cannot be disabled' });
   if (user.id === req.user.id) return res.status(400).json({ error: 'You cannot disable your own account' });
   await query('UPDATE users SET is_active = FALSE, updated_at = now() WHERE id = $1', [user.id]);
   await query('DELETE FROM sessions WHERE user_id = $1', [user.id]);
@@ -484,6 +512,7 @@ app.post('/api/users/:id/restore', requireRole('admin'), async (req, res) => {
 app.delete('/api/users/:id', requireRole('admin'), async (req, res) => {
   const user = await one('SELECT * FROM users WHERE id = $1', [toId(req.params.id)]);
   if (!user) return res.status(404).json({ error: 'User not found' });
+  if (user.is_super) return res.status(400).json({ error: 'The main administrator cannot be deleted' });
   if (user.id === req.user.id) return res.status(400).json({ error: 'You cannot delete your own account' });
   await query('DELETE FROM sessions WHERE user_id = $1', [user.id]);
   await query('DELETE FROM users WHERE id = $1', [user.id]);

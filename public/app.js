@@ -622,10 +622,10 @@ async function renderEmployees() {
             <td style="text-align:right; white-space:nowrap">
               <button class="btn btn-sm" data-action="edit" data-id="${u.id}">Edit</button>
               <button class="btn btn-sm" data-action="password" data-id="${u.id}">Reset password</button>
-              ${u.id !== currentUser.id ? (u.is_active
+              ${u.id !== currentUser.id && !u.is_super ? (u.is_active
                 ? `<button class="btn btn-sm btn-danger" data-action="deactivate" data-id="${u.id}">Disable</button>`
                 : `<button class="btn btn-sm btn-success" data-action="restore" data-id="${u.id}">Restore</button>`) : ''}
-              ${u.id !== currentUser.id ? `<button class="btn btn-sm btn-danger" data-action="delete" data-id="${u.id}">Delete</button>` : ''}
+              ${u.id !== currentUser.id && !u.is_super ? `<button class="btn btn-sm btn-danger" data-action="delete" data-id="${u.id}">Delete</button>` : ''}
             </td>
           </tr>`).join('')}</tbody>
       </table>` : '<div class="empty-state">No employees</div>'}
@@ -837,6 +837,7 @@ async function renderDivisions() {
             ${s.is_active
               ? `<button class="btn btn-sm btn-danger" data-action="deactivate" data-id="${s.id}">Deactivate</button>`
               : `<button class="btn btn-sm btn-success" data-action="restore" data-id="${s.id}">Restore</button>`}
+            ${currentUser.is_super ? `<button class="btn btn-sm btn-danger" data-action="delete" data-id="${s.id}">Delete</button>` : ''}
           </td>
         </tr>`).join('')}</tbody>
       </table>` : '<div class="empty-state">No divisions yet. Add a company first.</div>'}
@@ -847,9 +848,12 @@ async function renderDivisions() {
     const btn = e.target.closest('button[data-action]');
     if (!btn) return;
     const id = Number(btn.dataset.id);
-    if (btn.dataset.action === 'edit') return openDivisionModal(sites.find((s) => s.id === id), companies);
+    const act = btn.dataset.action;
+    if (act === 'edit') return openDivisionModal(sites.find((s) => s.id === id), companies);
+    if (act === 'delete' && !confirm('Delete this division permanently?')) return;
     try {
-      await api(`/api/sites/${id}/${btn.dataset.action}`, { method: 'POST', body: {} });
+      if (act === 'delete') await api(`/api/sites/${id}`, { method: 'DELETE' });
+      else await api(`/api/sites/${id}/${act}`, { method: 'POST', body: {} });
       toast('Saved');
       renderDivisions();
     } catch (err) { toast(err.message); }
@@ -906,7 +910,7 @@ async function renderCompanies() {
             ${c.is_active
               ? `<button class="btn btn-sm btn-danger" data-action="deactivate" data-id="${c.id}">Deactivate</button>`
               : `<button class="btn btn-sm btn-success" data-action="restore" data-id="${c.id}">Restore</button>`}
-            <button class="btn btn-sm btn-danger" data-action="delete" data-id="${c.id}">Delete</button>
+            ${currentUser.is_super ? `<button class="btn btn-sm btn-danger" data-action="delete" data-id="${c.id}">Delete</button>` : ''}
           </td>
         </tr>`).join('')}</tbody>
       </table>` : '<div class="empty-state">No companies yet.</div>'}

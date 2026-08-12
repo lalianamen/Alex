@@ -128,6 +128,9 @@ CREATE TABLE IF NOT EXISTS users (
   site_id       INTEGER REFERENCES sites(id),
   position_id   INTEGER REFERENCES positions(id),
   is_active         BOOLEAN NOT NULL DEFAULT TRUE,
+  -- The super administrator (the built-in "admin"): every power, including
+  -- permanently deleting companies and divisions. Regular admins cannot.
+  is_super          BOOLEAN NOT NULL DEFAULT FALSE,
   -- When true the user has no usable password and must set one at next sign-in.
   must_set_password BOOLEAN NOT NULL DEFAULT FALSE,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -203,6 +206,8 @@ ALTER TABLE users ADD CONSTRAINT users_role_check
   CHECK (role IN ('admin','owner','employee'));
 
 -- Positions, companies/divisions, request attribution and routing.
+ALTER TABLE users    ADD COLUMN IF NOT EXISTS is_super BOOLEAN NOT NULL DEFAULT FALSE;
+UPDATE users SET is_super = TRUE WHERE LOWER(login) = 'admin';
 ALTER TABLE users    ADD COLUMN IF NOT EXISTS position_id INTEGER REFERENCES positions(id);
 ALTER TABLE positions ADD COLUMN IF NOT EXISTS perm_accept  BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE positions ADD COLUMN IF NOT EXISTS perm_execute BOOLEAN NOT NULL DEFAULT FALSE;
@@ -261,7 +266,8 @@ async function initSchema() {
   const row = await one('SELECT COUNT(*)::int AS n FROM users');
   if (row.n === 0) {
     await query(
-      `INSERT INTO users (login, password_hash, full_name, role) VALUES ($1, $2, $3, 'admin')`,
+      `INSERT INTO users (login, password_hash, full_name, role, is_super)
+       VALUES ($1, $2, $3, 'admin', TRUE)`,
       ['admin', hashPassword('admin123'), 'System Administrator']
     );
     console.log('Created administrator account: admin / admin123 (please change the password!)');
