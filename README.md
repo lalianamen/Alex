@@ -1,63 +1,84 @@
 # Request Management
 
-Web application for creating and fulfilling work requests with a role-based
-access model. Built for an organization with several **sites** (addresses)
-whose administrators raise requests to shared **service departments**
-(e.g. Supply, Repair, Medication Supply).
+Web application for creating and fulfilling work requests, organized as
+**Company → Division → Position → Employee** with per-position permissions.
 
-## Roles
+## Model
 
-| Role | What they do |
-|------|--------------|
-| **System Administrator** | Manages user accounts, sites and departments; assigns roles; resets passwords. Sites and departments are deactivated (never deleted) so historical requests keep their references |
-| **Owner** | Sees all requests; builds reports for a period, broken down by department and by site, with CSV export |
-| **Site Administrator** | Works at one site (address); creates requests addressed to a service department of their choice; sees all requests from their site; can cancel a new request |
-| **Work Supervisor** | Belongs to a department; sees requests addressed to it; accepts a request and assigns an executor, or rejects it with a reason; confirms completion and closes, or returns for rework |
-| **Executor** | Belongs to a department; sees only the work assigned to them and marks it completed |
+- **Company** — top level. You can have several. Deactivated or (when unused) deleted.
+- **Division** — belongs to a company (e.g. a location or a service unit like Supply).
+  Deactivated, never deleted, so request history is preserved.
+- **Position** — the admin-created *role*: it belongs to a division and carries a set
+  of permission checkboxes. Permanent (deactivated, never deleted); the person
+  filling it changes over time.
+- **Employee** — one account, attached to one position. All of an employee's abilities
+  come from that position's permissions.
 
-## Request lifecycle
+Besides employees there are two special account roles: **System Administrator**
+(manages companies, divisions, positions and employees) and **Owner** (sees every
+request and builds reports across all companies).
+
+## Position permissions
+
+| Permission | What it allows |
+|------------|----------------|
+| Create requests | Raise a new request addressed to a division |
+| View all division requests | See every request from the employee's division (not only their own) |
+| Cancel requests | Cancel a new request from their division |
+| View division reports | See reports scoped to their division |
+| Accept & assign requests | Accept requests sent to their division, assign a performer, reject, close, reopen |
+| Perform assigned work | Be assigned as the performer and mark work completed |
+
+## Request flow
+
+A request is created by an employee (with *Create*) and **sent to a target
+division**. In that division, an employee with *Accept & assign* accepts it and
+assigns it to an employee with *Perform assigned work*; the performer marks it
+completed; the accepter confirms and closes it (or returns it for rework).
 
 ```
 New ──► In progress ──► Completed ──► Closed
  │           ▲              │
  │           └──────────────┘  (returned for rework)
- ├──► Rejected  (by a supervisor, with a reason)
- └──► Cancelled (by the site administrator)
+ ├──► Rejected  (by the accepter, with a reason)
+ └──► Cancelled (by the sender)
 ```
 
-A request carries the **site** it came from and the **department** it is
-addressed to. Any supervisor of that department can accept it; the supervisor
-who accepts it owns its later transitions.
+Each request stores the sending division, the target division, the creator's
+position and a snapshot of the creator's name, so history and reports survive
+even if the employee is later deleted.
+
+## Setup order
+
+1. **Companies** — add your company (or companies).
+2. **Divisions** — add divisions under a company.
+3. **Positions** — create positions on each division and tick their permissions.
+4. **Employees** — create people and attach each to a position.
 
 ## Deploying on Vercel
 
-The app targets [Vercel](https://vercel.com) hosting with a PostgreSQL database
-(the free [Neon](https://neon.tech) plan from the Vercel marketplace):
+Hosted on [Vercel](https://vercel.com) with a PostgreSQL database (the free
+[Neon](https://neon.tech) plan from the Vercel marketplace):
 
-1. Deploy the project to Vercel (via the GitHub integration or `vercel deploy`).
-2. In the project dashboard open **Storage → Create Database → Neon (Postgres)**
-   and connect the database to the project.
-3. Redeploy the project (**Deployments → Redeploy**) so the connection variable
-   takes effect.
+1. Deploy the project (GitHub integration or `vercel deploy`).
+2. **Storage → Create Database → Neon**, connect it to the project.
+3. **Deployments → Redeploy** so the connection variable takes effect.
 
-The app detects the Postgres connection string automatically regardless of the
-environment-variable prefix chosen when connecting the database. Tables are
-created — and existing databases are migrated in place — automatically on first
-use. When the database is empty, a system administrator account is created:
+The connection string is detected automatically regardless of its variable
+prefix. Tables are created — and existing databases migrated in place —
+automatically on first use. An empty database creates a system administrator:
 
 - username: `admin`
 - password: `admin123` — **change it right after the first sign-in**.
 
 ## Running locally
 
-Requires Node.js 18+ and a connection string to any PostgreSQL database:
-
 ```bash
 npm install
 DATABASE_URL="postgres://user:password@host/dbname" npm start
 ```
 
-The app is served at <http://localhost:3000> (the port is set by `PORT`).
+Served at <http://localhost:3000> (port set by `PORT`).
 
 ## Demo data
 
@@ -65,44 +86,33 @@ The app is served at <http://localhost:3000> (the port is set by `PORT`).
 DATABASE_URL="postgres://..." npm run seed:demo
 ```
 
-Creates three sites, three departments (Supply, Repair, Medication Supply) and
-these accounts (username / password):
+Creates a company, five divisions, positions with different permissions and
+these accounts (username / password): `admin`/`admin123`, `owner`/`owner123`,
+and several `demo123` employees (site managers, an intake clerk, division leads
+and workers).
 
-| Username | Password | Role |
-|----------|----------|------|
-| `admin` | `admin123` | System Administrator |
-| `owner` | `owner123` | Owner |
-| `main.admin`, `north.admin`, `west.admin` | `demo123` | Site Administrators |
-| `supply.sup`, `repair.sup`, `meds.sup` | `demo123` | Work Supervisors |
-| `supply.ex1`, `repair.ex1`, `meds.ex1`, … | `demo123` | Executors |
+## Passwords
 
-## Workflow
-
-1. The system administrator creates sites and departments, then user accounts
-   (site administrators are assigned a site; supervisors and executors a department).
-2. A site administrator creates a request and addresses it to a department.
-3. A supervisor of that department accepts the request and assigns an executor
-   (or rejects it with a reason).
-4. The executor performs the work and marks it completed.
-5. The supervisor confirms completion and closes the request (or returns it for rework).
-6. The owner reviews all requests and builds reports by department and by site.
+Creating an employee without a password (or resetting one to blank) puts the
+account into a "set password at first sign-in" state: the person signs in with
+their username alone and is prompted to choose a password.
 
 ## Technology
 
-- **Backend**: Node.js, Express 5, PostgreSQL (`pg` driver)
-- **Hosting**: Vercel (static assets + serverless function), database — Neon Postgres
-- **Authentication**: sessions in the database, `httpOnly` cookie, scrypt password hashing
-- **Frontend**: plain HTML/CSS/JavaScript, no frameworks (SPA)
+- **Backend**: Node.js, Express 5, PostgreSQL (`pg`)
+- **Hosting**: Vercel (static + serverless function), Neon Postgres
+- **Auth**: DB sessions, `httpOnly` cookie, scrypt password hashing
+- **Frontend**: plain HTML/CSS/JS (single-page app)
 
 ## Project structure
 
 ```
-api/index.js      — serverless function entry point for Vercel
+api/index.js      — serverless entry point for Vercel
 src/server.js     — Express app and all API routes
 src/db.js         — PostgreSQL connection, schema, in-place migrations
-src/auth.js       — sessions and permission checks
-src/passwords.js  — password hashing (scrypt)
-public/           — index.html, app.js, styles.css (the single-page interface)
+src/auth.js       — sessions and the signed-in user's permissions
+src/passwords.js  — scrypt password hashing
+public/           — index.html, app.js, styles.css
 scripts/seed-demo.js — demo data
 vercel.json       — routes /api/* to the serverless function
 ```

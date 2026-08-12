@@ -28,7 +28,9 @@ async function getSessionUser(token) {
             COALESCE(p.perm_create, FALSE)    AS perm_create,
             COALESCE(p.perm_view_site, FALSE) AS perm_view_site,
             COALESCE(p.perm_cancel, FALSE)    AS perm_cancel,
-            COALESCE(p.perm_reports, FALSE)   AS perm_reports
+            COALESCE(p.perm_reports, FALSE)   AS perm_reports,
+            COALESCE(p.perm_accept, FALSE)    AS perm_accept,
+            COALESCE(p.perm_execute, FALSE)   AS perm_execute
      FROM sessions s
      JOIN users u ON u.id = s.user_id
      LEFT JOIN positions p ON p.id = u.position_id

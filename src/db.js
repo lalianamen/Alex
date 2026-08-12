@@ -3,27 +3,21 @@
 const { Pool } = require('pg');
 const { hashPassword } = require('./passwords');
 
-// Roles:
-//   admin      — system administrator: manages accounts, sites and departments
-//   owner      — owner: sees all sites and requests, builds reports
-//   site_admin — site administrator: works at a site (address), creates requests
-//                addressed to a service department of their choice
-//   manager    — work supervisor: belongs to a department, accepts requests
-//                addressed to it and assigns an executor
-//   executor   — executor: belongs to a department, performs only their own work
-const ROLES = ['admin', 'owner', 'site_admin', 'manager', 'executor'];
-// Roles bound to a service department.
-const DEPT_ROLES = ['manager', 'executor'];
-// Roles bound to a site (address).
-const SITE_ROLES = ['site_admin'];
+// Account roles:
+//   admin    — system administrator: manages companies, divisions, positions, employees
+//   owner    — owner: sees all requests across all companies and builds reports
+//   employee — every other user; all abilities come from the assigned position
+// Hierarchy: Company -> Division (table `sites`) -> Position -> Employee (user).
+const ROLES = ['admin', 'owner', 'employee'];
 
 // Request statuses:
-//   new         — new, awaiting the supervisor's decision
-//   in_progress — accepted for work, an executor is assigned
+//   new         — created, awaiting a decision from the target division
+//   in_progress — accepted, an executor is assigned
 //   done        — the executor marked it completed
-//   closed      — the supervisor confirmed and closed the request
-//   rejected    — the supervisor rejected the request
-//   cancelled   — the department administrator cancelled the request
+//   closed      — the accepter confirmed and closed the request
+//   rejected    — the accepter rejected the request
+//   cancelled   — the creator cancelled the request
+
 const STATUSES = ['new', 'in_progress', 'done', 'closed', 'rejected', 'cancelled'];
 const PRIORITIES = ['low', 'normal', 'high'];
 
@@ -82,13 +76,24 @@ async function all(text, params) {
 }
 
 const SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS sites (
+CREATE TABLE IF NOT EXISTS companies (
   id         SERIAL PRIMARY KEY,
   name       TEXT NOT NULL UNIQUE,
   is_active  BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- "sites" is the Division level in the UI: a division belongs to a company.
+-- Divisions are deactivated, never deleted, so request history is preserved.
+CREATE TABLE IF NOT EXISTS sites (
+  id         SERIAL PRIMARY KEY,
+  company_id INTEGER REFERENCES companies(id),
+  name       TEXT NOT NULL UNIQUE,
+  is_active  BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Kept only for backward compatibility with older databases; no longer used.
 CREATE TABLE IF NOT EXISTS departments (
   id         SERIAL PRIMARY KEY,
   name       TEXT NOT NULL UNIQUE,
@@ -96,7 +101,7 @@ CREATE TABLE IF NOT EXISTS departments (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- A position (должность) belongs to a site (address) and carries a fixed set of
+-- A position (the admin-created role) belongs to a division and carries a set of
 -- permissions. It is permanent (deactivated, never deleted); the person filling
 -- it changes over time.
 CREATE TABLE IF NOT EXISTS positions (
@@ -107,6 +112,8 @@ CREATE TABLE IF NOT EXISTS positions (
   perm_view_site  BOOLEAN NOT NULL DEFAULT FALSE,
   perm_cancel     BOOLEAN NOT NULL DEFAULT FALSE,
   perm_reports    BOOLEAN NOT NULL DEFAULT FALSE,
+  perm_accept     BOOLEAN NOT NULL DEFAULT FALSE,
+  perm_execute    BOOLEAN NOT NULL DEFAULT FALSE,
   is_active       BOOLEAN NOT NULL DEFAULT TRUE,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -116,7 +123,7 @@ CREATE TABLE IF NOT EXISTS users (
   login         TEXT NOT NULL,
   password_hash TEXT NOT NULL,
   full_name     TEXT NOT NULL,
-  role          TEXT NOT NULL CHECK (role IN ('admin','owner','site_admin','manager','executor')),
+  role          TEXT NOT NULL CHECK (role IN ('admin','owner','employee')),
   department_id INTEGER REFERENCES departments(id),
   site_id       INTEGER REFERENCES sites(id),
   position_id   INTEGER REFERENCES positions(id),
@@ -143,9 +150,10 @@ CREATE TABLE IF NOT EXISTS requests (
   priority      TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('low','normal','high')),
   status        TEXT NOT NULL DEFAULT 'new'
                 CHECK (status IN ('new','in_progress','done','closed','rejected','cancelled')),
-  site_id       INTEGER REFERENCES sites(id),
-  position_id   INTEGER REFERENCES positions(id),
-  department_id INTEGER NOT NULL REFERENCES departments(id),
+  site_id        INTEGER REFERENCES sites(id),         -- origin division
+  position_id    INTEGER REFERENCES positions(id),     -- creator's position
+  target_site_id INTEGER REFERENCES sites(id),         -- division the request is sent to
+  department_id  INTEGER REFERENCES departments(id),   -- legacy, unused
   -- created_by may become NULL if the employee is later deleted; created_by_name
   -- is a snapshot so reporting survives that deletion.
   created_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -188,14 +196,20 @@ ALTER TABLE users    ADD COLUMN IF NOT EXISTS site_id INTEGER REFERENCES sites(i
 ALTER TABLE users    ADD COLUMN IF NOT EXISTS must_set_password BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE requests ADD COLUMN IF NOT EXISTS site_id INTEGER REFERENCES sites(id);
 ALTER TABLE requests ALTER COLUMN manager_id DROP NOT NULL;
+-- Collapse the old dept_admin/manager/executor/site_admin roles into "employee".
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
-UPDATE users SET role = 'site_admin' WHERE role = 'dept_admin';
+UPDATE users SET role = 'employee' WHERE role IN ('dept_admin','site_admin','manager','executor');
 ALTER TABLE users ADD CONSTRAINT users_role_check
-  CHECK (role IN ('admin','owner','site_admin','manager','executor'));
+  CHECK (role IN ('admin','owner','employee'));
 
--- Positions (положения) and request attribution snapshots.
+-- Positions, companies/divisions, request attribution and routing.
 ALTER TABLE users    ADD COLUMN IF NOT EXISTS position_id INTEGER REFERENCES positions(id);
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS perm_accept  BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS perm_execute BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE sites    ADD COLUMN IF NOT EXISTS company_id INTEGER REFERENCES companies(id);
 ALTER TABLE requests ADD COLUMN IF NOT EXISTS position_id INTEGER REFERENCES positions(id);
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS target_site_id INTEGER REFERENCES sites(id);
+ALTER TABLE requests ALTER COLUMN department_id DROP NOT NULL;
 ALTER TABLE requests ADD COLUMN IF NOT EXISTS created_by_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE request_events ADD COLUMN IF NOT EXISTS user_name TEXT NOT NULL DEFAULT '';
 UPDATE requests r SET created_by_name = u.full_name
@@ -222,7 +236,9 @@ ALTER TABLE request_events ADD CONSTRAINT request_events_user_id_fkey
 
 -- Created after the site_id column exists (base schema runs first, then this).
 CREATE INDEX IF NOT EXISTS idx_requests_site ON requests(site_id);
+CREATE INDEX IF NOT EXISTS idx_requests_target ON requests(target_site_id);
 CREATE INDEX IF NOT EXISTS idx_positions_site ON positions(site_id);
+CREATE INDEX IF NOT EXISTS idx_sites_company ON sites(company_id);
 `;
 
 // The schema is created lazily on first use (on serverless hosting each
@@ -253,9 +269,11 @@ async function initSchema() {
 }
 
 // Permission flags a position may grant.
-const POSITION_PERMS = ['perm_create', 'perm_view_site', 'perm_cancel', 'perm_reports'];
+const POSITION_PERMS = [
+  'perm_create', 'perm_view_site', 'perm_cancel', 'perm_reports', 'perm_accept', 'perm_execute',
+];
 
 module.exports = {
   pool, query, one, all, ready,
-  ROLES, DEPT_ROLES, SITE_ROLES, STATUSES, PRIORITIES, POSITION_PERMS,
+  ROLES, STATUSES, PRIORITIES, POSITION_PERMS,
 };
