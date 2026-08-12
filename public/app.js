@@ -225,6 +225,13 @@ $('#btn-logout').addEventListener('click', async () => {
   showLogin();
 });
 
+// Escape hatch from the first-password screen: sign out and return to login.
+$('#setpw-cancel').addEventListener('click', async () => {
+  await api('/api/logout', { method: 'POST' }).catch(() => {});
+  currentUser = null;
+  showLogin();
+});
+
 $('#btn-change-password').addEventListener('click', () => {
   openModal(`
     <h3>Change password</h3>
