@@ -132,6 +132,9 @@ CREATE TABLE IF NOT EXISTS users (
   department_id INTEGER REFERENCES departments(id),
   site_id       INTEGER REFERENCES sites(id),
   position_id   INTEGER REFERENCES positions(id),
+  -- Optional second position; must be in the same division as position_id.
+  -- The employee's effective permissions are the union of both positions.
+  position2_id  INTEGER REFERENCES positions(id),
   is_active         BOOLEAN NOT NULL DEFAULT TRUE,
   -- The super administrator (the built-in "admin"): every power, including
   -- permanently deleting companies and divisions. Regular admins cannot.
@@ -219,6 +222,7 @@ ALTER TABLE users    ADD COLUMN IF NOT EXISTS phone TEXT;
 ALTER TABLE users    ADD COLUMN IF NOT EXISTS address TEXT;
 ALTER TABLE users    ADD COLUMN IF NOT EXISTS supervisor_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
 ALTER TABLE users    ADD COLUMN IF NOT EXISTS position_id INTEGER REFERENCES positions(id);
+ALTER TABLE users    ADD COLUMN IF NOT EXISTS position2_id INTEGER REFERENCES positions(id);
 ALTER TABLE positions ADD COLUMN IF NOT EXISTS perm_accept  BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE positions ADD COLUMN IF NOT EXISTS perm_execute BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE sites    ADD COLUMN IF NOT EXISTS company_id INTEGER REFERENCES companies(id);

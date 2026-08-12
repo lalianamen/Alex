@@ -601,9 +601,10 @@ async function renderReports() {
 
 function userAttachment(u) {
   if (u.position_title) {
+    const titles = [u.position_title, u.position2_title].filter(Boolean).join(' + ');
     const div = u.site_name ? ` — ${u.site_name}` : '';
     const co = u.company_name ? ` (${u.company_name})` : '';
-    return `${u.position_title}${div}${co}`;
+    return `${titles}${div}${co}`;
   }
   return '—';
 }
@@ -701,6 +702,9 @@ function openUserModal(user, positions, allUsers) {
         <select id="u-pos">${positionOptionList(positions, user ? user.position_id : null)}</select>
         <div id="u-pos-hint" class="field-hint hidden">No positions yet — add one on the Positions tab first.</div>
       </label>
+      <label id="u-pos2-label">Second position (optional, same division)
+        <select id="u-pos2"><option value="">— none —</option></select>
+      </label>
       <div id="u-error" class="form-error hidden"></div>
       <div class="modal-actions">
         <button type="button" class="btn" onclick="closeModal()">Cancel</button>
@@ -710,15 +714,33 @@ function openUserModal(user, positions, allUsers) {
   `);
   const hasActivePos = positions.some((p) => p.is_active) || (user && user.position_id);
   const roleSelect = $('#u-role');
+
+  // The second position list is limited to the first position's division.
+  const rebuildSecond = () => {
+    const firstId = Number($('#u-pos').value);
+    const first = positions.find((p) => p.id === firstId);
+    const sel = user ? user.position2_id : null;
+    const opts = ['<option value="">— none —</option>'];
+    if (first) {
+      positions
+        .filter((p) => p.site_id === first.site_id && p.id !== firstId && (p.is_active || p.id === sel))
+        .forEach((p) => opts.push(`<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(p.title)}${p.is_active ? '' : ' (inactive)'}</option>`));
+    }
+    $('#u-pos2').innerHTML = opts.join('');
+  };
+
   const sync = () => {
     const needPos = roleSelect.value === 'employee';
     $('#u-pos-label').style.display = needPos ? '' : 'none';
     const missing = needPos && !hasActivePos;
     $('#u-pos-hint').classList.toggle('hidden', !missing);
     $('#u-pos').style.display = missing ? 'none' : '';
+    $('#u-pos2-label').style.display = needPos && !missing ? '' : 'none';
     $('#u-submit').disabled = missing;
+    if (needPos && !missing) rebuildSecond();
   };
   roleSelect.addEventListener('change', sync);
+  $('#u-pos').addEventListener('change', rebuildSecond);
   sync();
 
   $('#user-form').addEventListener('submit', async (e) => {
@@ -733,6 +755,7 @@ function openUserModal(user, positions, allUsers) {
       supervisor_id: $('#u-sup').value || null,
       role,
       position_id: role === 'employee' ? $('#u-pos').value || null : null,
+      position2_id: role === 'employee' ? $('#u-pos2').value || null : null,
     };
     if (isNew) body.password = $('#u-password').value;
     try {

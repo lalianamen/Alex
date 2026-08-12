@@ -49,7 +49,9 @@ function publicUser(u) {
     role: u.role,
     site_id: u.site_id,
     position_id: u.position_id,
+    position2_id: u.position2_id || null,
     position_title: u.position_title || null,
+    position2_title: u.position2_title || null,
     is_active: !!u.is_active,
     is_super: !!u.is_super,
     must_set_password: !!u.must_set_password,
@@ -413,6 +415,7 @@ async function validateUserPayload(body, selfId) {
   const phone = String(body.phone || '').trim() || null;
   const address = String(body.address || '').trim() || null;
   const position_id = body.position_id ? toId(body.position_id) : null;
+  const position2_id = body.position2_id ? toId(body.position2_id) : null;
   const supervisor_id = body.supervisor_id ? toId(body.supervisor_id) : null;
 
   if (!login) return { error: 'Enter a username' };
@@ -432,20 +435,31 @@ async function validateUserPayload(body, selfId) {
     }
   }
 
-  // Employees are attached to a position; the division is derived from it.
+  // Employees are attached to a position; the division is derived from it. An
+  // optional second position must be in the same division.
   let site = null;
   let position = null;
+  let position2 = null;
   if (role === 'employee') {
     if (!position_id) return { error: 'This role requires a position' };
     const pos = await one('SELECT * FROM positions WHERE id = $1', [position_id]);
     if (!pos) return { error: 'Position not found' };
     position = pos.id;
     site = pos.site_id;
+    if (position2_id) {
+      if (position2_id === position_id) return { error: 'The two positions must be different' };
+      const pos2 = await one('SELECT * FROM positions WHERE id = $1', [position2_id]);
+      if (!pos2) return { error: 'Second position not found' };
+      if (pos2.site_id !== pos.site_id) {
+        return { error: 'The second position must be in the same division' };
+      }
+      position2 = pos2.id;
+    }
   }
   return {
     value: {
       login, full_name, first_name, last_name, phone, address, role, password,
-      site_id: site, position_id: position, supervisor_id,
+      site_id: site, position_id: position, position2_id: position2, supervisor_id,
     },
   };
 }
@@ -453,10 +467,11 @@ async function validateUserPayload(body, selfId) {
 app.get('/api/users', requireRole('admin'), async (req, res) => {
   const users = (
     await all(
-      `SELECT u.*, p.title AS position_title, s.name AS site_name, c.name AS company_name,
-              sup.full_name AS supervisor_name
+      `SELECT u.*, p.title AS position_title, p2.title AS position2_title,
+              s.name AS site_name, c.name AS company_name, sup.full_name AS supervisor_name
        FROM users u
        LEFT JOIN positions p ON p.id = u.position_id
+       LEFT JOIN positions p2 ON p2.id = u.position2_id
        LEFT JOIN sites s ON s.id = u.site_id
        LEFT JOIN companies c ON c.id = s.company_id
        LEFT JOIN users sup ON sup.id = u.supervisor_id
@@ -465,6 +480,7 @@ app.get('/api/users', requireRole('admin'), async (req, res) => {
   ).map((u) => ({
     ...publicUser(u),
     position_title: u.position_title || null,
+    position2_title: u.position2_title || null,
     site_name: u.site_name || null,
     company_name: u.company_name || null,
     supervisor_name: u.supervisor_name || null,
@@ -482,10 +498,10 @@ app.post('/api/users', requireRole('admin'), async (req, res) => {
   const hasPassword = v.password.length >= 6;
   const user = await one(
     `INSERT INTO users (login, password_hash, full_name, first_name, last_name, phone, address,
-       role, site_id, position_id, supervisor_id, must_set_password)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+       role, site_id, position_id, position2_id, supervisor_id, must_set_password)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
     [v.login, hasPassword ? hashPassword(v.password) : '', v.full_name, v.first_name, v.last_name,
-      v.phone, v.address, v.role, v.site_id, v.position_id, v.supervisor_id, !hasPassword]
+      v.phone, v.address, v.role, v.site_id, v.position_id, v.position2_id, v.supervisor_id, !hasPassword]
   );
   res.json({ user: publicUser(user) });
 });
@@ -501,10 +517,10 @@ app.put('/api/users/:id', requireRole('admin'), async (req, res) => {
   }
   const updated = await one(
     `UPDATE users SET login = $1, full_name = $2, first_name = $3, last_name = $4, phone = $5,
-       address = $6, role = $7, site_id = $8, position_id = $9, supervisor_id = $10,
-       updated_at = now() WHERE id = $11 RETURNING *`,
+       address = $6, role = $7, site_id = $8, position_id = $9, position2_id = $10,
+       supervisor_id = $11, updated_at = now() WHERE id = $12 RETURNING *`,
     [v.login, v.full_name, v.first_name, v.last_name, v.phone, v.address, v.role, v.site_id,
-      v.position_id, v.supervisor_id, user.id]
+      v.position_id, v.position2_id, v.supervisor_id, user.id]
   );
   res.json({ user: publicUser(updated) });
 });
@@ -570,8 +586,11 @@ app.get('/api/target-divisions', requirePerm('perm_create'), async (req, res) =>
 app.get('/api/users/executors', requirePerm('perm_accept'), async (req, res) => {
   const executors = await all(
     `SELECT u.id, u.full_name FROM users u
-     JOIN positions p ON p.id = u.position_id
-     WHERE u.role = 'employee' AND u.is_active AND p.perm_execute AND p.site_id = $1
+     WHERE u.role = 'employee' AND u.is_active AND EXISTS (
+       SELECT 1 FROM positions p
+       WHERE p.id IN (u.position_id, u.position2_id)
+         AND p.perm_execute AND p.site_id = $1
+     )
      ORDER BY u.full_name`,
     [req.user.site_id]
   );
@@ -664,8 +683,12 @@ app.post('/api/requests/:id/accept', requirePerm('perm_accept'), async (req, res
   const executor_id = toId((req.body || {}).executor_id);
   if (!executor_id) return res.status(400).json({ error: 'Select someone to perform the work' });
   const executor = await one(
-    `SELECT u.* FROM users u JOIN positions p ON p.id = u.position_id
-     WHERE u.id = $1 AND u.is_active AND p.perm_execute AND p.site_id = $2`,
+    `SELECT u.* FROM users u
+     WHERE u.id = $1 AND u.is_active AND EXISTS (
+       SELECT 1 FROM positions p
+       WHERE p.id IN (u.position_id, u.position2_id)
+         AND p.perm_execute AND p.site_id = $2
+     )`,
     [executor_id, req.user.site_id]
   );
   if (!executor) return res.status(400).json({ error: 'That person cannot perform work in this division' });
@@ -711,8 +734,12 @@ app.post('/api/requests/:id/assign', requirePerm('perm_accept'), async (req, res
   const executor_id = toId((req.body || {}).executor_id);
   if (!executor_id) return res.status(400).json({ error: 'Select someone to perform the work' });
   const executor = await one(
-    `SELECT u.* FROM users u JOIN positions p ON p.id = u.position_id
-     WHERE u.id = $1 AND u.is_active AND p.perm_execute AND p.site_id = $2`,
+    `SELECT u.* FROM users u
+     WHERE u.id = $1 AND u.is_active AND EXISTS (
+       SELECT 1 FROM positions p
+       WHERE p.id IN (u.position_id, u.position2_id)
+         AND p.perm_execute AND p.site_id = $2
+     )`,
     [executor_id, req.user.site_id]
   );
   if (!executor) return res.status(400).json({ error: 'That person cannot perform work in this division' });
